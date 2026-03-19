@@ -33,11 +33,11 @@ disassemble_instruction :: proc(fn: ^Function, offset: int) -> int {
 }
 
 constant_instruction :: proc(op: Opcode, fn: ^Function, offset: int) -> int {
-    constant := fn.instructions[offset + 1]
+    constant := u16(fn.instructions[offset + 1]) | (u16(fn.instructions[offset + 2]) >> 8)
     fmt.printf("%-16v %4d '", op, constant)
     print_value(fn.constants[constant])
     fmt.println("'")
-    return offset + 2
+    return offset + 3
 }
 
 simple_instruction :: proc(op: Opcode, offset: int) -> int {
