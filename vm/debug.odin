@@ -14,10 +14,10 @@ disassemble_function :: proc(fn: ^Function, name: string) {
 disassemble_instruction :: proc(fn: ^Function, offset: int) -> int {
     fmt.printf("%04d ", offset)
 
-    if offset > 0 && fn.lines[offset] == fn.lines[offset - 1] {
+    if line := function_get_line(fn, offset); offset > 0 && line == function_get_line(fn, offset - 1) {
         fmt.print("   | ")
     } else {
-        fmt.printf("%4d ", fn.lines[offset])
+        fmt.printf("%4d ", line)
     }
 
     instruction := Opcode(fn.instructions[offset])
