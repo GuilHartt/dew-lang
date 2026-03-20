@@ -1,26 +1,52 @@
 package main
 
+import "core:bufio"
+import "core:fmt"
+import "core:os"
 import "../../vm"
 
+dewvm: vm.VM
+
 main :: proc() {
+    switch len(os.args) {
+        case 1: repl()
+        case 2: run(os.args[1])
+        case:
+            fmt.eprintln("Usage: dew [path]")
+            os.exit(64)
+    }
+}
 
-    dewvm := vm.vm_new()
+repl :: proc() {
+    vm.init(&dewvm)
 
-    function := vm.Function{}
+    reader: bufio.Reader
+    bufio.reader_init(&reader, os.to_stream(os.stdin))
 
-    vm.function_write_constant(&function, 1.2, 123)
-    vm.function_write_constant(&function, 3.4, 123)
-    vm.function_write(&function, u8(vm.Opcode.Add), 123)
+    for {
+        fmt.print("> ")
 
-    vm.function_write_constant(&function, 5.6, 123)
+        line, err := bufio.reader_read_string(&reader, '\n')
+        if err != nil do break
 
-    vm.function_write(&function, u8(vm.Opcode.Div), 123)
-    vm.function_write(&function, u8(vm.Opcode.Negate), 123)
-    
-    vm.function_write(&function, u8(vm.Opcode.Return), 123)
+        vm.interpret(&dewvm, line)
 
-    vm.disassemble_function(&function, "test function")
-    vm.vm_interpret(dewvm, &function)
-    vm.vm_free(dewvm)
-    vm.function_free(&function)
+        delete(line)
+    }
+}
+
+run :: proc(path: string) {
+    source, err := os.read_entire_file(path, context.allocator)
+    if err != nil {
+        fmt.eprintfln("Could not open file \"%s\".", path)
+        os.exit(74)
+    }
+    defer delete(source)
+
+    vm.init(&dewvm)
+
+    #partial switch vm.interpret(&dewvm, string(source)) {
+        case .CompileError: os.exit(65)
+        case .RuntimeError: os.exit(70)
+    }
 }

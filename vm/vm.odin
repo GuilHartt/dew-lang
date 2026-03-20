@@ -16,18 +16,16 @@ VM :: struct {
     stack_top: int,
 }
 
-vm_new :: proc() -> ^VM {
-    return new(VM)
+init :: proc(vm: ^VM) {
+    vm_reset_stack(vm)
 }
 
-vm_free :: proc(vm: ^VM) {
-    if vm != nil do free(vm)
+destroy :: proc(vm: ^VM) {
 }
 
-vm_interpret :: proc(vm: ^VM, fn: ^Function) -> InterpretResult {
-    vm.function = fn
-    vm.ip = 0
-    return vm_run(vm)
+interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
+    compile(source)
+    return .Ok
 }
 
 @(private)
