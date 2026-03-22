@@ -19,12 +19,10 @@ is_digit :: #force_inline proc(c: u8) -> bool {
     return c >= '0' && c <= '9'
 }
 
-
 @(private="file")
 is_alpha :: #force_inline proc(c: u8) -> bool {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
 }
-
 
 @(private)
 scan_token :: proc(scanner: ^Scanner) -> Token {

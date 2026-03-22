@@ -32,15 +32,6 @@ function_add_constant :: proc(fn: ^Function, value: Value) -> int {
     return len(fn.constants) - 1
 }
 
-function_write_constant :: proc(fn: ^Function, value: Value, line: i32) {
-    index := function_add_constant(fn, value)
-    assert(index <= int(max(u16)), "Too many constants in one chunk.")
-
-    function_write(fn, u8(Opcode.Constant), line)
-    function_write(fn, u8(index & 0xFF), line)
-    function_write(fn, u8((index >> 8) & 0xFF), line)
-}
-
 function_get_line :: proc(fn: ^Function, offset: int) -> i32 {
     if offset < 0 || offset >= len(fn.instructions) do return -1
 

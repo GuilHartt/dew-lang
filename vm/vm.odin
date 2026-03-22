@@ -24,8 +24,20 @@ destroy :: proc(vm: ^VM) {
 }
 
 interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
-    compile(source)
-    return .Ok
+    function: Function
+
+    if !compile(source, &function) {
+        function_free(&function)
+        return .CompileError
+    }
+
+    vm.function = &function
+    vm.ip = 0
+
+    result := vm_run(vm)
+    function_free(&function)
+
+    return result
 }
 
 @(private)
