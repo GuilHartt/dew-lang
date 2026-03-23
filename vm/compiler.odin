@@ -125,10 +125,25 @@ binary :: proc(parser: ^Parser) {
     parse_precedence(parser, Precedence(int(rule.precedence) + 1))
 
     #partial switch operator_type {
-        case .Plus:  emit_byte(parser, u8(Opcode.Add))
-        case .Minus: emit_byte(parser, u8(Opcode.Sub))
-        case .Star:  emit_byte(parser, u8(Opcode.Mul))
-        case .Slash: emit_byte(parser, u8(Opcode.Div))
+        case .BangEqual:    emit_bytes(parser, u8(Opcode.Equal), u8(Opcode.Not))
+        case .EqualEqual:   emit_byte(parser, u8(Opcode.Equal))
+        case .Greater:      emit_byte(parser, u8(Opcode.Greater))
+        case .GreaterEqual: emit_bytes(parser, u8(Opcode.Less), u8(Opcode.Not))
+        case .Less:         emit_byte(parser, u8(Opcode.Less))
+        case .LessEqual:    emit_bytes(parser, u8(Opcode.Greater), u8(Opcode.Not))
+        case .Plus:         emit_byte(parser, u8(Opcode.Add))
+        case .Minus:        emit_byte(parser, u8(Opcode.Sub))
+        case .Star:         emit_byte(parser, u8(Opcode.Mul))
+        case .Slash:        emit_byte(parser, u8(Opcode.Div))
+    }
+}
+
+@(private="file")
+parse_literal :: proc(parser: ^Parser) {
+    #partial switch parser.previous.type {
+        case .False: emit_byte(parser, u8(Opcode.False))
+        case .Nil:   emit_byte(parser, u8(Opcode.Nil))
+        case .True:  emit_byte(parser, u8(Opcode.True))
     }
 }
 
@@ -151,19 +166,29 @@ unary :: proc(parser: ^Parser) {
     parse_precedence(parser, .Unary)
 
     #partial switch operator_type {
+        case .Bang:  emit_byte(parser, u8(Opcode.Not))
         case .Minus: emit_byte(parser, u8(Opcode.Negate))
     }
 }
 
 @(private="file", rodata)
 rules := #partial [TokenType]ParseRule{
-    .LeftParen = {grouping, nil, .None},
-    .Minus     = {unary, binary, .Term},
-    .Plus      = {nil, binary, .Term},
-    .Slash     = {nil, binary, .Factor},
-    .Star      = {nil, binary, .Factor},
-    .Number    = {parse_number, nil, .None},
-    
+    .LeftParen    = {grouping, nil, .None},
+    .Minus        = {unary, binary, .Term},
+    .Plus         = {nil, binary, .Term},
+    .Slash        = {nil, binary, .Factor},
+    .Star         = {nil, binary, .Factor},
+    .Bang         = {unary, nil, .None},
+    .BangEqual    = {nil, binary, .Equality},
+    .EqualEqual   = {nil, binary, .Equality},
+    .Greater      = {nil, binary, .Comparison},
+    .GreaterEqual = {nil, binary, .Comparison},
+    .Less         = {nil, binary, .Comparison},
+    .LessEqual    = {nil, binary, .Comparison},
+    .Number       = {parse_number, nil, .None},
+    .False        = {parse_literal, nil, .None},
+    .Nil          = {parse_literal, nil, .None},
+    .True         = {parse_literal, nil, .None},
 }
 
 @(private="file")
@@ -197,9 +222,8 @@ error_at :: proc(parser: ^Parser, token: ^Token, message: string) {
 
     fmt.eprintf("[line %d] Error", token.line)
 
-    if token.type == .Eof {
-        fmt.eprintf(" at end")
-    } else if token.type != .Error {
+    if token.type == .Eof do fmt.eprintf(" at end")
+    else if token.type != .Error {
         fmt.eprintf(" at '%s'", token.lexeme)
     }
 

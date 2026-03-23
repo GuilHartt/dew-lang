@@ -24,7 +24,7 @@ disassemble_instruction :: proc(fn: ^Function, offset: int) -> int {
     switch instruction {
         case .Constant:
             return constant_instruction(instruction, fn, offset)
-        case .Add, .Sub, .Mul, .Div, .Negate, .Return:
+        case .Nil, .True, .False, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Return:
             return simple_instruction(instruction, offset)
         case:
             fmt.printfln("Unknown opcode %v", instruction)
