@@ -78,7 +78,7 @@ pop :: #force_inline proc "contextless" (vm: ^VM) -> Value {
 
 @(private)
 drop :: #force_inline proc "contextless" (vm: ^VM, count: int = 1) {
-    vm.sp -= 1
+    vm.sp -= count
 }
 
 @(private)
@@ -168,7 +168,7 @@ vm_run :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
         context = runtime.default_context()
 
         fmt.print("          ")
-        for i in 0..< vm.stack_top {
+        for i in 0..< vm.sp {
             fmt.print("[ ")
             print_value(vm.stack[i])
             fmt.print(" ]")
