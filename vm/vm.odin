@@ -1,5 +1,6 @@
 package vm
 
+import "core:strings"
 import "base:runtime"
 import "core:fmt"
 
@@ -13,7 +14,8 @@ VM :: struct {
     function: ^Function,
     ip: int,
     stack: [STACK_MAX]Value,
-    stack_top: int,
+    sp: int,
+    objects: ^Object,
 }
 
 init :: proc(vm: ^VM) {
@@ -21,11 +23,12 @@ init :: proc(vm: ^VM) {
 }
 
 destroy :: proc(vm: ^VM) {
+    free_objects(vm)
 }
 
 @(private)
 vm_reset_stack :: proc(vm: ^VM) {
-    vm.stack_top = 0
+    vm.sp = 0
 }
 
 @(private="file", cold)
@@ -43,7 +46,7 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
 interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
     function: Function
 
-    if !compile(source, &function) {
+    if !compile(vm, source, &function) {
         function_free(&function)
         return .CompileError
     }
@@ -59,28 +62,43 @@ interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
 
 @(private)
 push :: #force_inline proc "contextless" (vm: ^VM, value: Value) {
-    vm.stack[vm.stack_top] = value
-    vm.stack_top += 1
+    vm.stack[vm.sp] = value
+    vm.sp += 1
 }
 
 @(private)
 pop :: #force_inline proc "contextless" (vm: ^VM) -> Value {
-    vm.stack_top -= 1
-    return vm.stack[vm.stack_top]
+    vm.sp -= 1
+    return vm.stack[vm.sp]
+}
+
+@(private)
+drop :: #force_inline proc "contextless" (vm: ^VM, count: int = 1) {
+    vm.sp -= 1
 }
 
 @(private)
 peek :: #force_inline proc "contextless" (vm: ^VM, distance: int) -> Value {
-    return vm.stack[vm.stack_top - 1 - distance]
+    return vm.stack[vm.sp - 1 - distance]
 }
 
-@(private)
+@(private="file")
 is_falsey :: #force_inline proc "contextless" (value: Value) -> bool {
     #partial switch v in value {
         case Nil:  return true
         case bool: return !v
         case:      return false
     }
+}
+
+@(private="file")
+concatenate :: #force_inline proc "contextless" (vm: ^VM, lhs, rhs: ^ObjectString) {
+    context = runtime.default_context()
+   
+    result := allocate_string(vm,  strings.concatenate({lhs.chars, rhs.chars}))
+    drop(vm, 2)
+
+    push(vm, val_obj(result))
 }
 
 @(private="file")
@@ -106,17 +124,16 @@ read_constant :: #force_inline proc "contextless" (vm: ^VM) -> Value {
 
 @(private="file")
 check_numbers :: #force_inline proc "contextless" (vm: ^VM) -> (f64, f64, InterpretResult) {
-    b_val, b_is_num := peek(vm, 0).(f64)
-    a_val, a_is_num := peek(vm, 1).(f64)
+    rhs_num, rhs_is_num := check_number(peek(vm, 0))
+    lhs_num, lhs_is_num := check_number(peek(vm, 1))
 
-    if !a_is_num || !b_is_num {
+    if !lhs_is_num || !rhs_is_num {
         runtime_error(vm, "Operands must be numbers.")
         return 0, 0, .RuntimeError
     }
 
-    pop(vm)
-    pop(vm)
-    return a_val, b_val, .Ok
+    drop(vm, 2)
+    return lhs_num, rhs_num, .Ok
 }
 
 @(private, rodata)
@@ -175,78 +192,93 @@ do_nil :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
 
 @(private="file")
 do_true :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    push(vm, true)
+    push(vm, val_bool(true))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_false :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    push(vm, false)
+    push(vm, val_bool(false))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_equal :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    b := pop(vm)
-    a := pop(vm)
-    push(vm, a == b)
+    rhs := pop(vm)
+    lhs := pop(vm)
+    push(vm, val_bool(lhs == rhs))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_negate :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-
-    val, is_num := peek(vm, 0).(f64)
+    num, is_num := check_number(peek(vm, 0))
     if !is_num {
         runtime_error(vm, "Operand must be a number.")
         return .RuntimeError
     }
 
     pop(vm)
-    push(vm, -val)
+    push(vm, -num)
 
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_greater :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    a, b := check_numbers(vm) or_return
-    push(vm, a > b)
+    lhs, rhs := check_numbers(vm) or_return
+    push(vm, val_bool(lhs > rhs))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_less :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    a, b := check_numbers(vm) or_return
-    push(vm, a < b)
+    lhs, rhs := check_numbers(vm) or_return
+    push(vm, val_bool(lhs < rhs))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_add :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    a, b := check_numbers(vm) or_return
-    push(vm, a + b)
-    return #must_tail vm_run(vm)
+    rhs_num, rhs_is_num := check_number(peek(vm, 0))
+    lhs_num, lhs_is_num := check_number(peek(vm, 1))
+
+    if lhs_is_num && rhs_is_num {
+        drop(vm, 2)
+        push(vm, val_number(lhs_num + rhs_num))
+        return #must_tail vm_run(vm)
+    }
+
+    rhs_str, rhs_is_str := check_string(peek(vm, 0))
+    lhs_str, lhs_is_str := check_string(peek(vm, 1))
+
+    if lhs_is_str && rhs_is_str {
+        concatenate(vm, lhs_str, rhs_str)
+        return #must_tail vm_run(vm)
+    }
+
+    runtime_error(vm, "Operands must be two numbers or two strings.")
+    return .RuntimeError
 }
 
 @(private="file")
 do_sub :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    a, b := check_numbers(vm) or_return
-    push(vm, a - b)
+    lhs, rhs := check_numbers(vm) or_return
+    push(vm, val_number(lhs - rhs))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_mul :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    a, b := check_numbers(vm) or_return
-    push(vm, a * b)
+    lhs, rhs := check_numbers(vm) or_return
+    push(vm, val_number(lhs * rhs))
     return #must_tail vm_run(vm)
 }
 
 @(private="file")
 do_div :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    a, b := check_numbers(vm) or_return
-    push(vm, a / b)
+    lhs, rhs := check_numbers(vm) or_return
+    push(vm, val_number(lhs / rhs))
     return #must_tail vm_run(vm)
 }
 

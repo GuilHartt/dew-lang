@@ -4,12 +4,13 @@ import "core:strconv"
 import "core:fmt"
 
 Parser :: struct {
-    scanner:            Scanner,
+    scanner: Scanner,
     compiling_function: ^Function,
-    current:            Token,
-    previous:           Token,
-    had_error:          bool,
-    panic_mode:         bool,
+    vm: ^VM,
+    current: Token,
+    previous: Token,
+    had_error: bool,
+    panic_mode: bool,
 }
 
 Precedence :: enum u8 {
@@ -34,10 +35,11 @@ ParseRule :: struct {
     precedence: Precedence,
 }
 
-compile :: proc(source: string, fn: ^Function) -> bool {
+compile :: proc(vm: ^VM, source: string, fn: ^Function) -> bool {
     parser: Parser
     scanner_init(&parser.scanner, source)
 
+    parser.vm = vm
     parser.compiling_function = fn
 
     advance(&parser)
@@ -160,6 +162,12 @@ parse_number :: proc(parser: ^Parser) {
 }
 
 @(private="file")
+parse_string :: proc(parser: ^Parser) {
+    value := copy_string(parser.vm, parser.previous.lexeme[1 : len(parser.previous.lexeme) - 1])
+    emit_constant(parser, Value(cast(^Object)value))
+}
+
+@(private="file")
 unary :: proc(parser: ^Parser) {
     operator_type := parser.previous.type
 
@@ -185,6 +193,7 @@ rules := #partial [TokenType]ParseRule{
     .GreaterEqual = {nil, binary, .Comparison},
     .Less         = {nil, binary, .Comparison},
     .LessEqual    = {nil, binary, .Comparison},
+    .String       = {parse_string, nil, .None},
     .Number       = {parse_number, nil, .None},
     .False        = {parse_literal, nil, .None},
     .Nil          = {parse_literal, nil, .None},
