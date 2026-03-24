@@ -15,14 +15,18 @@ VM :: struct {
     ip: int,
     stack: [STACK_MAX]Value,
     sp: int,
+    strings: Table,
     objects: ^Object,
 }
 
 init :: proc(vm: ^VM) {
     vm_reset_stack(vm)
+    vm.objects = nil
+    init_table(&vm.strings)
 }
 
 destroy :: proc(vm: ^VM) {
+    free_table(&vm.strings)
     free_objects(vm)
 }
 
@@ -94,10 +98,10 @@ is_falsey :: #force_inline proc "contextless" (value: Value) -> bool {
 @(private="file")
 concatenate :: #force_inline proc "contextless" (vm: ^VM, lhs, rhs: ^ObjectString) {
     context = runtime.default_context()
-   
-    result := allocate_string(vm,  strings.concatenate({lhs.chars, rhs.chars}))
-    drop(vm, 2)
 
+    result := take_string(vm, strings.concatenate({lhs.chars, rhs.chars}))
+
+    drop(vm, 2)
     push(vm, val_obj(result))
 }
 
@@ -186,7 +190,7 @@ do_constant :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
 
 @(private="file")
 do_nil :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    push(vm, Nil{})
+    push(vm, val_nil())
     return #must_tail vm_run(vm)
 }
 
