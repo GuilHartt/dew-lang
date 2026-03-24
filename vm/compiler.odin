@@ -3,14 +3,16 @@ package vm
 import "core:strconv"
 import "core:fmt"
 
+LOCAL_MAX :: int(max(u8)) + 1
+
 Parser :: struct {
-    scanner: Scanner,
-    compiling_function: ^Function,
-    vm: ^VM,
-    current: Token,
-    previous: Token,
-    had_error: bool,
+    current:    Token,
+    previous:   Token,
+    had_error:  bool,
     panic_mode: bool,
+    scanner:    Scanner,
+    compiler:   ^Compiler,
+    vm:         ^VM,
 }
 
 Precedence :: enum u8 {
@@ -35,12 +37,27 @@ ParseRule :: struct {
     precedence: Precedence,
 }
 
+Local :: struct {
+    name: Token,
+    depth: int,
+}
+
+Compiler :: struct {
+    function: ^Function,
+    locals: [LOCAL_MAX]Local,
+    local_count: int,
+    scope_depth: int,
+}
+
 compile :: proc(vm: ^VM, source: string, fn: ^Function) -> bool {
+    compiler: Compiler
+    compiler.function = fn
+
     parser: Parser
     scanner_init(&parser.scanner, source)
 
     parser.vm = vm
-    parser.compiling_function = fn
+    parser.compiler = &compiler
 
     advance(&parser)
     
@@ -87,7 +104,7 @@ match :: proc(parser: ^Parser, type: TokenType) -> bool {
 
 @(private="file")
 emit_byte :: proc(parser: ^Parser , byte: u8) {
-    function_write(parser.compiling_function, byte, parser.previous.line)
+    function_write(parser.compiler.function, byte, parser.previous.line)
 }
 
 @(private="file")
@@ -109,7 +126,7 @@ emit_return :: proc(parser: ^Parser) {
 
 @(private="file")
 make_constant :: proc(parser: ^Parser, value: Value) -> u16 {
-    constant := function_add_constant(parser.compiling_function, value)
+    constant := function_add_constant(parser.compiler.function, value)
 
     if constant > int(max(u16)) {
         error(parser, "Too many constants in one chunk.")
@@ -129,8 +146,25 @@ end_compiler :: proc(parser: ^Parser) {
     emit_return(parser)
     when DEW_DEBUG_PRINT_CODE {
         if !parser.had_error {
-            disassemble_function(parser.compiling_function, "code")
+            disassemble_function(parser.compiler.function, "code")
         }
+    }
+}
+
+@(private="file")
+begin_scope :: proc(parser: ^Parser) {
+    parser.compiler.scope_depth += 1
+}
+
+@(private="file")
+end_scope :: proc(parser: ^Parser) {
+    current := parser.compiler
+
+    current.scope_depth -= 1
+
+    for current.local_count > 0 && current.locals[current.local_count - 1].depth > current.scope_depth {
+        emit_byte(parser, u8(Opcode.Pop))
+        current.local_count -= 1
     }
 }
 
@@ -181,16 +215,22 @@ parse_string :: proc(parser: ^Parser, can_assign: bool) {
     emit_constant(parser, Value(cast(^Object)value))
 }
 
-@(private="file")
 named_variable :: proc(parser: ^Parser, name: ^Token, can_assign: bool) {
-    arg := identifier_constant(parser, name)
+    arg := resolve_local(parser, name)
+    is_local := arg != -1
+
+    if !is_local {
+        arg = int(identifier_constant(parser, name))
+    }
 
     if can_assign && match(parser, .Equal) {
         expression(parser)
-        emit_short(parser, .SetGlobal, arg)
+        if is_local do emit_bytes(parser, u8(Opcode.SetLocal), u8(arg))
+        else        do emit_short(parser, .SetGlobal, u16(arg))
     } else {
-        emit_short(parser, .GetGlobal, arg)
-    }   
+        if is_local do emit_bytes(parser, u8(Opcode.GetLocal), u8(arg))
+        else        do emit_short(parser, .GetGlobal, u16(arg))
+    }
 }
 
 @(private="file")
@@ -262,19 +302,90 @@ identifier_constant :: proc(parser: ^Parser, name: ^Token) -> u16 {
 }
 
 @(private="file")
+resolve_local :: proc(parser: ^Parser, name: ^Token) -> int {
+    for i := parser.compiler.local_count -1; i >= 0; i -= 1 {
+        local := &parser.compiler.locals[i]
+        if name.lexeme == local.name.lexeme {
+            if local.depth == -1 {
+                error(parser, "Can't read local variable in its own initializer.")
+            }
+            return i
+        }
+    }
+
+    return -1
+}
+
+@(private="file")
+declare_variable :: proc(parser: ^Parser) {
+    if parser.compiler.scope_depth == 0 do return
+
+    name := parser.previous
+
+    for i := parser.compiler.local_count - 1; i >= 0; i -= 1 {
+        local := parser.compiler.locals[i]
+        if local.depth != -1 && local.depth < parser.compiler.scope_depth {
+            break
+        }
+
+        if name.lexeme == local.name.lexeme {
+            error(parser, "Already a variable with this name in this scope.")
+        }
+    }
+
+    add_local(parser, name)
+}
+
+@(private="file")
+add_local :: proc(parser: ^Parser, name: Token) {
+    if parser.compiler.local_count == int(max(u8)) {
+        error(parser, "Too many local variables in function.")
+        return
+    }
+
+    local := &parser.compiler.locals[parser.compiler.local_count]
+    local.name = name
+    local.depth = -1
+    parser.compiler.local_count += 1
+}
+
+@(private="file")
 parse_variable :: proc(parser: ^Parser, error_mesage: string) -> u16 {
     consume(parser, .Identifier, error_mesage)
+
+    declare_variable(parser)
+    if parser.compiler.scope_depth > 0 do return 0
+
     return identifier_constant(parser, &parser.previous)
 }
 
 @(private="file")
+mark_initialized :: proc(parser: ^Parser) {
+    parser.compiler.locals[parser.compiler.local_count - 1].depth = parser.compiler.scope_depth
+}
+
+@(private="file")
 define_variable :: proc(parser: ^Parser, global: u16) {
+    if parser.compiler.scope_depth > 0 {
+        mark_initialized(parser)
+        return
+    }
+
     emit_short(parser, .DefineGlobal, global)
 }
 
 @(private="file")
 expression :: proc(parser: ^Parser) {
     parse_precedence(parser, .Assignment)
+}
+
+@(private="file")
+block :: proc(parser: ^Parser) {
+    for !check(parser, .RightBrace) && !check(parser, .Eof) {
+        declaration(parser)
+    }
+
+    consume(parser, .RightBrace, "Expect '}' after block.")
 }
 
 @(private="file")
@@ -335,6 +446,10 @@ declaration :: proc(parser: ^Parser) {
 statement :: proc(parser: ^Parser) {
     if match(parser, .Print) {
         print_statement(parser)
+    } else if match(parser, .LeftBrace) {
+        begin_scope(parser)
+        block(parser)
+        end_scope(parser)
     } else {
         expression_statement(parser)
     }

@@ -6,6 +6,8 @@ Opcode :: enum u8 {
     True,
     False,
     Pop,
+    GetLocal,
+    SetLocal,
     GetGlobal,
     DefineGlobal,
     SetGlobal,

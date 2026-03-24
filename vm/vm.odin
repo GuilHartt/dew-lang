@@ -4,7 +4,7 @@ import "core:strings"
 import "base:runtime"
 import "core:fmt"
 
-STACK_MAX :: max(u8)
+STACK_MAX :: int(max(u8)) + 1
 
 InterpretResult :: enum u8 {
     Ok, CompileError, RuntimeError
@@ -156,6 +156,8 @@ LUT := [Opcode](proc "preserve/none" (^VM) -> InterpretResult) {
     .True         = do_true,
     .False        = do_false,
     .Pop          = do_pop,
+    .GetLocal     = do_get_local,
+    .SetLocal     = do_set_local,
     .GetGlobal    = do_get_global,
     .DefineGlobal = do_define_global,
     .SetGlobal    = do_set_global,
@@ -223,6 +225,20 @@ do_false :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
 @(private="file")
 do_pop :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
     drop(vm)
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_get_local :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    slot := read_byte(vm)
+    push(vm, vm.stack[slot])
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_set_local :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    slot := read_byte(vm)
+    vm.stack[slot] = peek(vm, 0)
     return #must_tail vm_run(vm)
 }
 

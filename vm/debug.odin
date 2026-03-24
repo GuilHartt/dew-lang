@@ -26,21 +26,32 @@ disassemble_instruction :: proc(fn: ^Function, offset: int) -> int {
             return constant_instruction(instruction, fn, offset)
         case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .Return:
             return simple_instruction(instruction, offset)
+        case .SetLocal, .GetLocal:
+            return byte_instruction(instruction, fn, offset)
         case:
             fmt.printfln("Unknown opcode %v", instruction)
             return offset + 1
     }
 }
 
+@(private="file")
 constant_instruction :: proc(op: Opcode, fn: ^Function, offset: int) -> int {
-    constant := u16(fn.instructions[offset + 1]) | (u16(fn.instructions[offset + 2]) >> 8)
+    constant := u16(fn.instructions[offset + 1]) | (u16(fn.instructions[offset + 2]) << 8)
     fmt.printf("%-16v %4d '", op, constant)
     print_value(fn.constants[constant])
     fmt.println("'")
     return offset + 3
 }
 
+@(private="file")
 simple_instruction :: proc(op: Opcode, offset: int) -> int {
     fmt.printfln("%v", op)
     return offset + 1
+}
+
+@(private="file")
+byte_instruction :: proc(op: Opcode, fn: ^Function, offset: int) -> int {
+    slot := fn.instructions[offset + 1]
+    fmt.printfln("%-16v %4d", op, slot)
+    return offset + 2
 }
