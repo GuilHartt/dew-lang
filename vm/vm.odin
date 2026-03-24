@@ -15,6 +15,7 @@ VM :: struct {
     ip: int,
     stack: [STACK_MAX]Value,
     sp: int,
+    globals: Table,
     strings: Table,
     objects: ^Object,
 }
@@ -22,10 +23,13 @@ VM :: struct {
 init :: proc(vm: ^VM) {
     vm_reset_stack(vm)
     vm.objects = nil
+
+    init_table(&vm.globals)
     init_table(&vm.strings)
 }
 
 destroy :: proc(vm: ^VM) {
+    free_table(&vm.globals)
     free_table(&vm.strings)
     free_objects(vm)
 }
@@ -127,6 +131,11 @@ read_constant :: #force_inline proc "contextless" (vm: ^VM) -> Value {
 }
 
 @(private="file")
+read_string :: #force_inline proc "contextless" (vm: ^VM) -> ^ObjectString {
+    return as_string(read_constant(vm))
+}
+
+@(private="file")
 check_numbers :: #force_inline proc "contextless" (vm: ^VM) -> (f64, f64, InterpretResult) {
     rhs_num, rhs_is_num := check_number(peek(vm, 0))
     lhs_num, lhs_is_num := check_number(peek(vm, 1))
@@ -143,19 +152,24 @@ check_numbers :: #force_inline proc "contextless" (vm: ^VM) -> (f64, f64, Interp
 @(private, rodata)
 LUT := [Opcode](proc "preserve/none" (^VM) -> InterpretResult) {
     .Constant = do_constant,
-    .Nil      = do_nil,
-    .True     = do_true,
-    .False    = do_false,
-    .Equal    = do_equal,
-    .Greater  = do_greater,
-    .Less     = do_less,
-    .Add      = do_add,
-    .Sub      = do_sub,
-    .Mul      = do_mul,
-    .Div      = do_div,
-    .Not      = do_not,
-    .Negate   = do_negate,
-    .Return   = do_return,
+    .Nil          = do_nil,
+    .True         = do_true,
+    .False        = do_false,
+    .Pop          = do_pop,
+    .GetGlobal    = do_get_global,
+    .DefineGlobal = do_define_global,
+    .SetGlobal    = do_set_global,
+    .Equal        = do_equal,
+    .Greater      = do_greater,
+    .Less         = do_less,
+    .Add          = do_add,
+    .Sub          = do_sub,
+    .Mul          = do_mul,
+    .Div          = do_div,
+    .Not          = do_not,
+    .Negate       = do_negate,
+    .Print        = do_print,
+    .Return       = do_return,
 }
 
 @(private)
@@ -203,6 +217,43 @@ do_true :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
 @(private="file")
 do_false :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
     push(vm, val_bool(false))
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_pop :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    drop(vm)
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_get_global :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    name := read_string(vm)
+    value, exists := table_get(&vm.globals, name)
+    if !exists {
+        runtime_error(vm, "Undefined variable '%s'.", name.chars)
+        return .RuntimeError
+    }
+    push(vm, value)
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_define_global :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    name := read_string(vm)
+    table_set(&vm.globals, name, peek(vm, 0))
+    drop(vm)
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_set_global :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    name := read_string(vm)
+    if table_set(&vm.globals, name, peek(vm, 0)) {
+        table_delete(&vm.globals, name)
+        runtime_error(vm, "Undefined variable '%s'.", name.chars)
+        return .RuntimeError
+    }
     return #must_tail vm_run(vm)
 }
 
@@ -293,9 +344,14 @@ do_not :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
 }
 
 @(private="file")
-do_return :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+do_print :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
     context = runtime.default_context()
     print_value(pop(vm))
     fmt.println()
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_return :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
     return .Ok
 }

@@ -27,7 +27,7 @@ Precedence :: enum u8 {
     Primary,
 }
 
-ParseProc :: #type proc(parser: ^Parser)
+ParseProc :: #type proc(parser: ^Parser, can_assign: bool)
 
 ParseRule :: struct {
     prefix: ParseProc,
@@ -43,8 +43,10 @@ compile :: proc(vm: ^VM, source: string, fn: ^Function) -> bool {
     parser.compiling_function = fn
 
     advance(&parser)
-    expression(&parser)
-    consume(&parser, .Eof, "Expect end of expression.")
+    
+    for !match(&parser, .Eof) {
+        declaration(&parser)
+    }
 
     end_compiler(&parser)
     return !parser.had_error
@@ -69,6 +71,18 @@ consume :: proc(parser: ^Parser, type: TokenType, message: string) {
     }
 
     error_at_current(parser, message)
+}
+
+@(private="file")
+check :: #force_inline proc(parser: ^Parser, type: TokenType) -> bool {
+    return parser.current.type == type
+}
+
+@(private="file")
+match :: proc(parser: ^Parser, type: TokenType) -> bool {
+    if !check(parser, type) do return false
+    advance(parser)
+    return true
 }
 
 @(private="file")
@@ -121,7 +135,7 @@ end_compiler :: proc(parser: ^Parser) {
 }
 
 @(private="file")
-binary :: proc(parser: ^Parser) {
+binary :: proc(parser: ^Parser, can_assign: bool) {
     operator_type := parser.previous.type
     rule := &rules[operator_type]
     parse_precedence(parser, Precedence(int(rule.precedence) + 1))
@@ -141,7 +155,7 @@ binary :: proc(parser: ^Parser) {
 }
 
 @(private="file")
-parse_literal :: proc(parser: ^Parser) {
+parse_literal :: proc(parser: ^Parser, can_assign: bool) {
     #partial switch parser.previous.type {
         case .False: emit_byte(parser, u8(Opcode.False))
         case .Nil:   emit_byte(parser, u8(Opcode.Nil))
@@ -150,25 +164,42 @@ parse_literal :: proc(parser: ^Parser) {
 }
 
 @(private="file")
-grouping :: proc(parser: ^Parser) {
+grouping :: proc(parser: ^Parser, can_assign: bool) {
     expression(parser)
     consume(parser, .RightParen, "Expect ')' after expression.")
 }
 
 @(private="file")
-parse_number :: proc(parser: ^Parser) {
+parse_number :: proc(parser: ^Parser, can_assign: bool) {
     value, _ := strconv.parse_f64(parser.previous.lexeme)
     emit_constant(parser, Value(value))
 }
 
 @(private="file")
-parse_string :: proc(parser: ^Parser) {
+parse_string :: proc(parser: ^Parser, can_assign: bool) {
     value := copy_string(parser.vm, parser.previous.lexeme[1 : len(parser.previous.lexeme) - 1])
     emit_constant(parser, Value(cast(^Object)value))
 }
 
 @(private="file")
-unary :: proc(parser: ^Parser) {
+named_variable :: proc(parser: ^Parser, name: ^Token, can_assign: bool) {
+    arg := identifier_constant(parser, name)
+
+    if can_assign && match(parser, .Equal) {
+        expression(parser)
+        emit_short(parser, .SetGlobal, arg)
+    } else {
+        emit_short(parser, .GetGlobal, arg)
+    }   
+}
+
+@(private="file")
+variable :: proc(parser: ^Parser, can_assign: bool) {
+    named_variable(parser, &parser.previous, can_assign)
+}
+
+@(private="file")
+unary :: proc(parser: ^Parser, can_assign: bool) {
     operator_type := parser.previous.type
 
     parse_precedence(parser, .Unary)
@@ -193,6 +224,7 @@ rules := #partial [TokenType]ParseRule{
     .GreaterEqual = {nil, binary, .Comparison},
     .Less         = {nil, binary, .Comparison},
     .LessEqual    = {nil, binary, .Comparison},
+    .Identifier   = {variable, nil, .None},
     .String       = {parse_string, nil, .None},
     .Number       = {parse_number, nil, .None},
     .False        = {parse_literal, nil, .None},
@@ -210,18 +242,102 @@ parse_precedence :: proc(parser: ^Parser, precedence: Precedence) {
         return
     }
 
-    prefix_rule(parser)
+    can_assign := precedence <= .Assignment
+    prefix_rule(parser, can_assign)
 
     for precedence <= rules[parser.current.type].precedence {
         advance(parser)
         infix_rule := rules[parser.previous.type].infix
-        infix_rule(parser)
+        infix_rule(parser, can_assign)
     }
+
+    if can_assign && match(parser, .Equal) {
+        error(parser, "Invalid assignment target.")
+    }
+}
+
+@(private="file")
+identifier_constant :: proc(parser: ^Parser, name: ^Token) -> u16 {
+    return make_constant(parser, val_obj(copy_string(parser.vm, name.lexeme)))
+}
+
+@(private="file")
+parse_variable :: proc(parser: ^Parser, error_mesage: string) -> u16 {
+    consume(parser, .Identifier, error_mesage)
+    return identifier_constant(parser, &parser.previous)
+}
+
+@(private="file")
+define_variable :: proc(parser: ^Parser, global: u16) {
+    emit_short(parser, .DefineGlobal, global)
 }
 
 @(private="file")
 expression :: proc(parser: ^Parser) {
     parse_precedence(parser, .Assignment)
+}
+
+@(private="file")
+var_declaration :: proc(parser: ^Parser) {
+    global := parse_variable(parser, "Expect variable name.")
+
+    if match(parser, .Equal) {
+        expression(parser)
+    } else {
+        emit_byte(parser, u8(Opcode.Nil))
+    }
+    consume(parser, .Semicolon, "Expect ';' after variable declaration.")
+
+    define_variable(parser, global)
+}
+
+@(private="file")
+expression_statement :: proc(parser: ^Parser) {
+    expression(parser)
+    consume(parser, .Semicolon, "Expect ';' after expression.")
+    emit_byte(parser, u8(Opcode.Pop))
+}
+
+@(private="file")
+print_statement :: proc(parser: ^Parser) {
+    expression(parser)
+    consume(parser, .Semicolon, "Expect ';' after value.")
+    emit_byte(parser, u8(Opcode.Print))
+}
+
+@(private="file")
+synchronize :: proc(parser: ^Parser) {
+    parser.panic_mode = false
+
+    for parser.current.type != .Eof {
+        if parser.previous.type == .Semicolon do return
+
+        #partial switch parser.current.type {
+            case .Class, .Fn, .Var, .For, .If, .While, .Print, .Return:  return
+        }
+
+        advance(parser)
+    }
+}
+
+@(private="file")
+declaration :: proc(parser: ^Parser) {
+    if match(parser, .Var) {
+        var_declaration(parser)
+    } else {
+        statement(parser)
+    }
+
+    if parser.panic_mode do synchronize(parser)
+}
+
+@(private="file")
+statement :: proc(parser: ^Parser) {
+    if match(parser, .Print) {
+        print_statement(parser)
+    } else {
+        expression_statement(parser)
+    }
 }
 
 @(private="file")

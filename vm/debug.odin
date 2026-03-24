@@ -22,9 +22,9 @@ disassemble_instruction :: proc(fn: ^Function, offset: int) -> int {
 
     instruction := Opcode(fn.instructions[offset])
     switch instruction {
-        case .Constant:
+        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal:
             return constant_instruction(instruction, fn, offset)
-        case .Nil, .True, .False, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Return:
+        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .Return:
             return simple_instruction(instruction, offset)
         case:
             fmt.printfln("Unknown opcode %v", instruction)

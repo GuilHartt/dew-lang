@@ -24,8 +24,8 @@ val_nil :: #force_inline proc "contextless" () -> Value {
     return Value(Nil{})
 }
 
-val_number :: #force_inline proc "contextless" (num: f64) -> Value {
-    return Value(num)
+val_number :: #force_inline proc "contextless" (n: f64) -> Value {
+    return Value(n)
 }
 
 val_bool :: #force_inline proc "contextless" (b: bool) -> Value {
@@ -36,9 +36,16 @@ val_obj :: #force_inline proc "contextless" (obj: ^Object) -> Value {
     return Value(obj)
 }
 
-is_nil :: #force_inline proc "contextless" (val: Value) -> bool {
-    _, ok := val.(Nil)
+is_nil :: #force_inline proc "contextless" (v: Value) -> bool {
+    _, ok := v.(Nil)
     return ok
+}
+
+as_string :: #force_inline proc "contextless" (v: Value) -> ^ObjectString {
+    if obj, ok := v.(^Object); ok {
+        return cast(^ObjectString)obj
+    }
+    return nil
 }
 
 check_number :: #force_inline proc "contextless" (v: Value) -> (f64, bool) {

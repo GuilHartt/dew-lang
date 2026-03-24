@@ -1,5 +1,7 @@
 package vm
 
+import "base:runtime"
+
 TABLE_MAX_LOAD :: 0.75
 
 Entry :: struct {
@@ -45,7 +47,8 @@ find_entry :: proc(entries: []Entry, key: ^ObjectString) -> ^Entry {
     }
 }
 
-table_get :: proc(table: ^Table, key: ^ObjectString) -> (Value, bool) {
+table_get :: proc "contextless" (table: ^Table, key: ^ObjectString) -> (Value, bool) {
+    context = runtime.default_context()
     if table.count == 0 do return val_nil(), false
 
     entry := find_entry(table.entries, key)
@@ -77,7 +80,9 @@ adjust_capacity :: proc(table: ^Table, capacity: int) {
     table.entries = entries
 }
 
-table_set :: proc(table: ^Table, key: ^ObjectString, value: Value) -> bool {
+table_set :: proc "contextless" (table: ^Table, key: ^ObjectString, value: Value) -> bool {
+    context = runtime.default_context()
+
     if cap := len(table.entries); f64(table.count + 1) > f64(cap) * TABLE_MAX_LOAD {
         capacity := cap < 8 ? 8 : cap * 2
         adjust_capacity(table, capacity)
@@ -92,7 +97,9 @@ table_set :: proc(table: ^Table, key: ^ObjectString, value: Value) -> bool {
     return is_new_key
 }
 
-table_delete :: proc(table: ^Table, key: ^ObjectString) -> bool {
+table_delete :: proc "contextless" (table: ^Table, key: ^ObjectString) -> bool {
+    context = runtime.default_context()
+    
     if table.count == 0 do return false
 
     entry := find_entry(table.entries, key)
