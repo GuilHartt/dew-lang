@@ -14,7 +14,7 @@ TokenType :: enum u8 {
     Identifier, String, Number,
 
     And, Class, Else, False,
-    For, Fn, If, Nil, Or,
+    For, chunk, If, Nil, Or,
     Print, Return, Super, Self,
     True, Var, While,
 

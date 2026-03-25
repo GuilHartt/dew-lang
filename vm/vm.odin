@@ -11,7 +11,7 @@ InterpretResult :: enum u8 {
 }
 
 VM :: struct {
-    function: ^Function,
+    Chunk: ^Chunk,
     ip: int,
     stack: [STACK_MAX]Value,
     sp: int,
@@ -45,25 +45,25 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
     fmt.eprintfln(format, ..args)
 
     instruction := vm.ip - 1
-    line := function_get_line(vm.function, instruction)
+    line := chunk_get_line(vm.Chunk, instruction)
     fmt.eprintfln("[line %d] in script", line)
 
     vm_reset_stack(vm)
 }
 
 interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
-    function: Function
+    chunk: Chunk
 
-    if !compile(vm, source, &function) {
-        function_free(&function)
+    if !compile(vm, source, &chunk) {
+        chunk_free(&chunk)
         return .CompileError
     }
 
-    vm.function = &function
+    vm.Chunk = &chunk
     vm.ip = 0
 
     result := vm_run(vm)
-    function_free(&function)
+    chunk_free(&chunk)
 
     return result
 }
@@ -111,15 +111,15 @@ concatenate :: #force_inline proc "contextless" (vm: ^VM, lhs, rhs: ^ObjectStrin
 
 @(private="file")
 read_byte :: #force_inline proc "contextless" (vm: ^VM) -> u8 {
-    b := vm.function.instructions[vm.ip]
+    b := vm.Chunk.instructions[vm.ip]
     vm.ip += 1
     return b
 }
 
 @(private="file")
 read_short :: #force_inline proc "contextless" (vm: ^VM) -> u16 {
-    low  := u16(vm.function.instructions[vm.ip])
-    high := u16(vm.function.instructions[vm.ip + 1])
+    low  := u16(vm.Chunk.instructions[vm.ip])
+    high := u16(vm.Chunk.instructions[vm.ip + 1])
     vm.ip += 2
     return low | (high << 8)
 }
@@ -127,7 +127,7 @@ read_short :: #force_inline proc "contextless" (vm: ^VM) -> u16 {
 @(private="file")
 read_constant :: #force_inline proc "contextless" (vm: ^VM) -> Value {
     index := read_short(vm)
-    return vm.function.constants[index]
+    return vm.Chunk.constants[index]
 }
 
 @(private="file")
@@ -179,7 +179,7 @@ LUT := [Opcode](proc "preserve/none" (^VM) -> InterpretResult) {
 
 @(private)
 vm_run :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
-    if vm.ip >= len(vm.function.instructions) {
+    if vm.ip >= len(vm.Chunk.instructions) {
         return .Ok
     }
 
@@ -194,7 +194,7 @@ vm_run :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
         }
         fmt.println()
 
-        disassemble_instruction(vm.function, vm.ip)
+        disassemble_instruction(vm.Chunk, vm.ip)
     }
 
     return #must_tail LUT[Opcode(read_byte(vm))](vm)

@@ -43,15 +43,15 @@ Local :: struct {
 }
 
 Compiler :: struct {
-    function: ^Function,
+    chunk: ^Chunk,
     locals: [LOCAL_MAX]Local,
     local_count: int,
     scope_depth: int,
 }
 
-compile :: proc(vm: ^VM, source: string, fn: ^Function) -> bool {
+compile :: proc(vm: ^VM, source: string, chunk: ^Chunk) -> bool {
     compiler: Compiler
-    compiler.function = fn
+    compiler.chunk = chunk
 
     parser: Parser
     scanner_init(&parser.scanner, source)
@@ -120,7 +120,7 @@ match :: proc(parser: ^Parser, type: TokenType) -> bool {
 
 @(private="file")
 emit_byte :: proc(parser: ^Parser , byte: u8) {
-    function_write(parser.compiler.function, byte, parser.previous.line)
+    chunk_write(parser.compiler.chunk, byte, parser.previous.line)
 }
 
 @(private="file")
@@ -131,7 +131,7 @@ emit_bytes :: proc(parser: ^Parser, byte1, byte2: u8) {
 
 @(private="file")
 emit_loop :: proc(parser: ^Parser, loop_start: int) {
-    offset := len(parser.compiler.function.instructions) - loop_start + 3
+    offset := len(parser.compiler.chunk.instructions) - loop_start + 3
     if offset > int(max(u16)) do error(parser, "Loop body too large.")
 
     emit_short(parser, .Loop, u16(offset))
@@ -140,7 +140,7 @@ emit_loop :: proc(parser: ^Parser, loop_start: int) {
 @(private="file")
 emit_jump :: proc(parser: ^Parser, op: Opcode) -> int {
     emit_short(parser, op, 0xFFFF)
-    return len(parser.compiler.function.instructions) - 2
+    return len(parser.compiler.chunk.instructions) - 2
 }
 
 @(private="file")
@@ -156,7 +156,7 @@ emit_return :: proc(parser: ^Parser) {
 
 @(private="file")
 make_constant :: proc(parser: ^Parser, value: Value) -> u16 {
-    constant := function_add_constant(parser.compiler.function, value)
+    constant := chunk_add_constant(parser.compiler.chunk, value)
 
     if constant > int(max(u16)) {
         error(parser, "Too many constants in one chunk.")
@@ -173,14 +173,14 @@ emit_constant :: proc(parser: ^Parser, value: Value) {
 
 @(private="file")
 patch_jump :: proc(parser: ^Parser, offset: int) {
-    jump := len(parser.compiler.function.instructions) -offset - 2
+    jump := len(parser.compiler.chunk.instructions) -offset - 2
 
     if jump > int(max(u16)) {
         error(parser, "Too much code to jump over.")
     }
 
-    parser.compiler.function.instructions[offset] = u8(jump & 0xFF)
-    parser.compiler.function.instructions[offset + 1] = u8((jump >> 8) & 0xFF)
+    parser.compiler.chunk.instructions[offset] = u8(jump & 0xFF)
+    parser.compiler.chunk.instructions[offset + 1] = u8((jump >> 8) & 0xFF)
 }
 
 @(private="file")
@@ -188,7 +188,7 @@ end_compiler :: proc(parser: ^Parser) {
     emit_return(parser)
     when DEW_DEBUG_PRINT_CODE {
         if !parser.had_error {
-            disassemble_function(parser.compiler.function, "code")
+            disassemble_Chunk(parser.compiler.chunk, "code")
         }
     }
 }
@@ -396,7 +396,7 @@ declare_variable :: proc(parser: ^Parser) {
 @(private="file")
 add_local :: proc(parser: ^Parser, name: Token) {
     if parser.compiler.local_count == int(max(u8)) {
-        error(parser, "Too many local variables in function.")
+        error(parser, "Too many local variables in Chunk.")
         return
     }
 
@@ -487,7 +487,7 @@ for_statement :: proc(parser: ^Parser) {
         expression_statement(parser)
     }
 
-    loop_start := len(parser.compiler.function.instructions)
+    loop_start := len(parser.compiler.chunk.instructions)
     exit_jump := -1
     if !match(parser, .Semicolon) {
         expression(parser)
@@ -499,7 +499,7 @@ for_statement :: proc(parser: ^Parser) {
 
     if !check(parser, .LeftBrace) {
         body_jump := emit_jump(parser, .Jump)
-        increment_start := len(parser.compiler.function.instructions)
+        increment_start := len(parser.compiler.chunk.instructions)
         expression(parser)
         emit_byte(parser, u8(Opcode.Pop))
 
@@ -553,7 +553,7 @@ print_statement :: proc(parser: ^Parser) {
 
 @(private="file")
 while_statement :: proc(parser: ^Parser) {
-    loop_start := len(parser.compiler.function.instructions)
+    loop_start := len(parser.compiler.chunk.instructions)
 
     expression(parser)
 
@@ -576,7 +576,7 @@ synchronize :: proc(parser: ^Parser) {
         if parser.previous.type == .Semicolon do return
 
         #partial switch parser.current.type {
-            case .Class, .Fn, .Var, .For, .If, .While, .Print, .Return:  return
+            case .Class, .chunk, .Var, .For, .If, .While, .Print, .Return:  return
         }
 
         advance(parser)
