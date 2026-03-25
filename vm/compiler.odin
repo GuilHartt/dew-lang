@@ -91,6 +91,22 @@ consume :: proc(parser: ^Parser, type: TokenType, message: string) {
 }
 
 @(private="file")
+consume_terminator :: proc(parser: ^Parser, message: string) {
+    if match(parser, .Semicolon) do return
+    if check(parser, .RightBrace) || check(parser, .Eof) do return
+    if parser.current.line > parser.previous.line do return
+    error_at_current(parser, message)
+}
+
+@(private="file")
+consume_block :: proc(parser: ^Parser, message: string) {
+    consume(parser, .LeftBrace, message)
+    begin_scope(parser)
+    block(parser)
+    end_scope(parser)
+}
+
+@(private="file")
 check :: #force_inline proc(parser: ^Parser, type: TokenType) -> bool {
     return parser.current.type == type
 }
@@ -326,6 +342,7 @@ parse_precedence :: proc(parser: ^Parser, precedence: Precedence) {
     prefix_rule(parser, can_assign)
 
     for precedence <= rules[parser.current.type].precedence {
+        if parser.current.line > parser.previous.line do break
         advance(parser)
         infix_rule := rules[parser.previous.type].infix
         infix_rule(parser, can_assign)
@@ -446,7 +463,7 @@ var_declaration :: proc(parser: ^Parser) {
     } else {
         emit_byte(parser, u8(Opcode.Nil))
     }
-    consume(parser, .Semicolon, "Expect ';' after variable declaration.")
+    consume_terminator(parser, "Expect ';' after variable declaration.")
 
     define_variable(parser, global)
 }
@@ -454,14 +471,14 @@ var_declaration :: proc(parser: ^Parser) {
 @(private="file")
 expression_statement :: proc(parser: ^Parser) {
     expression(parser)
-    consume(parser, .Semicolon, "Expect ';' after expression.")
+    consume_terminator(parser, "Expect ';' after expression.")
     emit_byte(parser, u8(Opcode.Pop))
 }
 
 @(private="file")
 for_statement :: proc(parser: ^Parser) {
     begin_scope(parser)
-    consume(parser, .LeftParen, "Expect '(' after 'for'.")
+    
     if match(parser, .Semicolon) {
 
     } else if match(parser, .Var) {
@@ -480,19 +497,18 @@ for_statement :: proc(parser: ^Parser) {
         emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
     }
 
-    if !match(parser, .RightParen) {
+    if !check(parser, .LeftBrace) {
         body_jump := emit_jump(parser, .Jump)
         increment_start := len(parser.compiler.function.instructions)
         expression(parser)
         emit_byte(parser, u8(Opcode.Pop))
-        consume(parser, .RightParen, "Expect ')' after for clauses.")
 
         emit_loop(parser, loop_start)
         loop_start = increment_start
         patch_jump(parser, body_jump)
     }
 
-    statement(parser)
+    consume_block(parser, "Expect '{' before 'for' body.")
     emit_loop(parser, loop_start)
 
     if exit_jump != -1 {
@@ -505,27 +521,33 @@ for_statement :: proc(parser: ^Parser) {
 
 @(private="file")
 if_statement :: proc(parser: ^Parser) {
-    consume(parser, .LeftParen, "Expect '(' after 'if'.")
     expression(parser)
-    consume(parser, .RightParen, "Expect ')' after condition.")
 
     then_jump := emit_jump(parser, .JumpIfFalse)
     emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
-    statement(parser)
+    
+    consume_block(parser, "Expect '{' before 'if' body.")
 
     else_jump := emit_jump(parser, .Jump)
 
     patch_jump(parser, then_jump)
     emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 
-    if match(parser, .Else) do statement(parser)
+    if match(parser, .Else) {
+        if match(parser, .If) {
+            if_statement(parser)
+        } else {
+            consume_block(parser, "Expect '{' before 'else' body.")
+        }
+    }
+
     patch_jump(parser, else_jump)
 }
 
 @(private="file")
 print_statement :: proc(parser: ^Parser) {
     expression(parser)
-    consume(parser, .Semicolon, "Expect ';' after value.")
+    consume_terminator(parser, "Expect ';' after value.")
     emit_byte(parser, u8(Opcode.Print))
 }
 
@@ -533,13 +555,13 @@ print_statement :: proc(parser: ^Parser) {
 while_statement :: proc(parser: ^Parser) {
     loop_start := len(parser.compiler.function.instructions)
 
-    consume(parser, .LeftParen, "Expect '(' after 'while'.")
     expression(parser)
-    consume(parser, .RightParen, "Expect ')' after condition.")
 
     exit_jump := emit_jump(parser, .JumpIfFalse)
     emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
-    statement(parser)
+
+    consume_block(parser, "Expect '{' before 'while' body.")
+
     emit_loop(parser, loop_start)
 
     patch_jump(parser, exit_jump)
