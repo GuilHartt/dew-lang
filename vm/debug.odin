@@ -28,6 +28,10 @@ disassemble_instruction :: proc(fn: ^Function, offset: int) -> int {
             return simple_instruction(instruction, offset)
         case .SetLocal, .GetLocal:
             return byte_instruction(instruction, fn, offset)
+        case .Loop:
+            return jump_instruction(instruction, -1, fn, offset)
+        case .Jump, .JumpIfFalse:
+            return jump_instruction(instruction, 1, fn, offset)
         case:
             fmt.printfln("Unknown opcode %v", instruction)
             return offset + 1
@@ -54,4 +58,12 @@ byte_instruction :: proc(op: Opcode, fn: ^Function, offset: int) -> int {
     slot := fn.instructions[offset + 1]
     fmt.printfln("%-16v %4d", op, slot)
     return offset + 2
+}
+
+@(private="file")
+jump_instruction :: proc(op: Opcode, sign: int, fn: ^Function, offset: int) -> int {
+    jump := u16(fn.instructions[offset + 1]) | (u16(fn.instructions[offset + 2]) << 8)
+    target := offset + 3 + sign * int(jump)
+    fmt.printfln("%-16v %4d -> %d", op, offset, target)
+    return offset + 3
 }

@@ -171,6 +171,9 @@ LUT := [Opcode](proc "preserve/none" (^VM) -> InterpretResult) {
     .Not          = do_not,
     .Negate       = do_negate,
     .Print        = do_print,
+    .Jump         = do_jump,
+    .JumpIfFalse  = do_jump_if_false,
+    .Loop         = do_loop,
     .Return       = do_return,
 }
 
@@ -364,6 +367,27 @@ do_print :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
     context = runtime.default_context()
     print_value(pop(vm))
     fmt.println()
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_jump :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    offset := read_short(vm)
+    vm.ip += int(offset)
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_jump_if_false :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    offset := read_short(vm)
+    if is_falsey(peek(vm, 0)) do vm.ip += int(offset)
+    return #must_tail vm_run(vm)
+}
+
+@(private="file")
+do_loop :: proc "preserve/none" (vm: ^VM) -> InterpretResult {
+    offset := read_short(vm)
+    vm.ip -= int(offset)
     return #must_tail vm_run(vm)
 }
 

@@ -114,6 +114,20 @@ emit_bytes :: proc(parser: ^Parser, byte1, byte2: u8) {
 }
 
 @(private="file")
+emit_loop :: proc(parser: ^Parser, loop_start: int) {
+    offset := len(parser.compiler.function.instructions) - loop_start + 3
+    if offset > int(max(u16)) do error(parser, "Loop body too large.")
+
+    emit_short(parser, .Loop, u16(offset))
+}
+
+@(private="file")
+emit_jump :: proc(parser: ^Parser, op: Opcode) -> int {
+    emit_short(parser, op, 0xFFFF)
+    return len(parser.compiler.function.instructions) - 2
+}
+
+@(private="file")
 emit_short :: proc(parser: ^Parser, opcode: Opcode, operand: u16) {
     emit_byte(parser, u8(opcode))
     emit_bytes(parser, u8(operand & 0xFF), u8((operand >> 8) & 0xFF))
@@ -139,6 +153,18 @@ make_constant :: proc(parser: ^Parser, value: Value) -> u16 {
 @(private="file")
 emit_constant :: proc(parser: ^Parser, value: Value) {
     emit_short(parser, .Constant, make_constant(parser, value))
+}
+
+@(private="file")
+patch_jump :: proc(parser: ^Parser, offset: int) {
+    jump := len(parser.compiler.function.instructions) -offset - 2
+
+    if jump > int(max(u16)) {
+        error(parser, "Too much code to jump over.")
+    }
+
+    parser.compiler.function.instructions[offset] = u8(jump & 0xFF)
+    parser.compiler.function.instructions[offset + 1] = u8((jump >> 8) & 0xFF)
 }
 
 @(private="file")
@@ -210,6 +236,18 @@ parse_number :: proc(parser: ^Parser, can_assign: bool) {
 }
 
 @(private="file")
+or :: proc(parser: ^Parser, can_assign: bool) {
+    else_jump := emit_jump(parser, .JumpIfFalse)
+    end_jump := emit_jump(parser, .Jump)
+
+    patch_jump(parser, else_jump)
+    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+
+    parse_precedence(parser, .Or)
+    patch_jump(parser, end_jump)
+}
+
+@(private="file")
 parse_string :: proc(parser: ^Parser, can_assign: bool) {
     value := copy_string(parser.vm, parser.previous.lexeme[1 : len(parser.previous.lexeme) - 1])
     emit_constant(parser, Value(cast(^Object)value))
@@ -267,8 +305,10 @@ rules := #partial [TokenType]ParseRule{
     .Identifier   = {variable, nil, .None},
     .String       = {parse_string, nil, .None},
     .Number       = {parse_number, nil, .None},
+    .And          = {nil, and, .And},
     .False        = {parse_literal, nil, .None},
     .Nil          = {parse_literal, nil, .None},
+    .Or           = {nil, or, .Or},
     .True         = {parse_literal, nil, .None},
 }
 
@@ -375,6 +415,15 @@ define_variable :: proc(parser: ^Parser, global: u16) {
 }
 
 @(private="file")
+and :: proc(parser: ^Parser, can_assign: bool) {
+    end_jump := emit_jump(parser, .JumpIfFalse)
+    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+    parse_precedence(parser, .And)
+
+    patch_jump(parser, end_jump)
+}
+
+@(private="file")
 expression :: proc(parser: ^Parser) {
     parse_precedence(parser, .Assignment)
 }
@@ -410,10 +459,91 @@ expression_statement :: proc(parser: ^Parser) {
 }
 
 @(private="file")
+for_statement :: proc(parser: ^Parser) {
+    begin_scope(parser)
+    consume(parser, .LeftParen, "Expect '(' after 'for'.")
+    if match(parser, .Semicolon) {
+
+    } else if match(parser, .Var) {
+        var_declaration(parser)
+    } else {
+        expression_statement(parser)
+    }
+
+    loop_start := len(parser.compiler.function.instructions)
+    exit_jump := -1
+    if !match(parser, .Semicolon) {
+        expression(parser)
+        consume(parser, .Semicolon, "Expect ';' after loop condition.")
+
+        exit_jump = emit_jump(parser, .JumpIfFalse)
+        emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+    }
+
+    if !match(parser, .RightParen) {
+        body_jump := emit_jump(parser, .Jump)
+        increment_start := len(parser.compiler.function.instructions)
+        expression(parser)
+        emit_byte(parser, u8(Opcode.Pop))
+        consume(parser, .RightParen, "Expect ')' after for clauses.")
+
+        emit_loop(parser, loop_start)
+        loop_start = increment_start
+        patch_jump(parser, body_jump)
+    }
+
+    statement(parser)
+    emit_loop(parser, loop_start)
+
+    if exit_jump != -1 {
+        patch_jump(parser, exit_jump)
+        emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+    }
+
+    end_scope(parser)
+}
+
+@(private="file")
+if_statement :: proc(parser: ^Parser) {
+    consume(parser, .LeftParen, "Expect '(' after 'if'.")
+    expression(parser)
+    consume(parser, .RightParen, "Expect ')' after condition.")
+
+    then_jump := emit_jump(parser, .JumpIfFalse)
+    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+    statement(parser)
+
+    else_jump := emit_jump(parser, .Jump)
+
+    patch_jump(parser, then_jump)
+    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+
+    if match(parser, .Else) do statement(parser)
+    patch_jump(parser, else_jump)
+}
+
+@(private="file")
 print_statement :: proc(parser: ^Parser) {
     expression(parser)
     consume(parser, .Semicolon, "Expect ';' after value.")
     emit_byte(parser, u8(Opcode.Print))
+}
+
+@(private="file")
+while_statement :: proc(parser: ^Parser) {
+    loop_start := len(parser.compiler.function.instructions)
+
+    consume(parser, .LeftParen, "Expect '(' after 'while'.")
+    expression(parser)
+    consume(parser, .RightParen, "Expect ')' after condition.")
+
+    exit_jump := emit_jump(parser, .JumpIfFalse)
+    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+    statement(parser)
+    emit_loop(parser, loop_start)
+
+    patch_jump(parser, exit_jump)
+    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 }
 
 @(private="file")
@@ -446,6 +576,12 @@ declaration :: proc(parser: ^Parser) {
 statement :: proc(parser: ^Parser) {
     if match(parser, .Print) {
         print_statement(parser)
+    } else if match(parser, .For) {
+        for_statement(parser)
+    } else if match(parser, .If) {
+        if_statement(parser)
+    } else if match(parser, .While) {
+        while_statement(parser)
     } else if match(parser, .LeftBrace) {
         begin_scope(parser)
         block(parser)
