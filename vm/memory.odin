@@ -7,6 +7,9 @@ free_object :: proc(object: ^Object) {
             function := cast(^ObjectFunction)object
             chunk_free(&function.chunk)
             free(function)
+        case .Native:
+            native := cast(^ObjectNative)object
+            free(native)
         case .String:
             string := cast(^ObjectString)object
             delete(string.chars)

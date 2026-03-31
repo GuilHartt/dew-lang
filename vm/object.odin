@@ -6,6 +6,7 @@ import "core:strings"
 
 ObjectType :: enum u8 {
     Function,
+    Native,
     String,
 }
 
@@ -18,6 +19,14 @@ ObjectFunction :: struct {
     using obj: Object,
     arity: int,
     chunk: Chunk,
+    name: ^ObjectString,
+}
+
+NativeFn :: #type proc(vm: ^VM, args: []Value) -> (Value, bool)
+
+ObjectNative :: struct {
+    using obj: Object,
+    function: NativeFn,
     name: ^ObjectString,
 }
 
@@ -70,6 +79,8 @@ print_object :: proc(object: ^Object) {
     switch object.type {
         case .Function:
             print_function(cast(^ObjectFunction)object)
+        case .Native:
+            fmt.print(( cast(^ObjectNative)object).name.chars)
         case .String:
             fmt.print(( cast(^ObjectString)object).chars)
     }
@@ -87,4 +98,11 @@ print_function :: proc(function: ^ObjectFunction) {
 new_function :: proc(vm: ^VM) -> ^ObjectFunction {
     function := allocate_object(vm, ObjectFunction, .Function)
     return function
+}
+
+new_native :: proc(vm: ^VM, function: NativeFn, name: ^ObjectString) -> ^ObjectNative {
+    native := allocate_object(vm, ObjectNative, .Native)
+    native.function = function
+    native.name = name
+    return native
 }

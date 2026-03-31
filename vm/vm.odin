@@ -1,5 +1,6 @@
 package vm
 
+import "core:time"
 import "core:strings"
 import "base:runtime"
 import "core:fmt"
@@ -33,6 +34,11 @@ init :: proc(vm: ^VM) {
 
     init_table(&vm.globals)
     init_table(&vm.strings)
+
+    define_native(vm, "clock", proc(vm: ^VM, args: []Value) -> (Value, bool) {
+        nanos := time.to_unix_nanoseconds(time.now())
+        return val_number(f64(nanos) / 1e9), true
+    })
 }
 
 destroy :: proc(vm: ^VM) {
@@ -66,6 +72,14 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
     }
 
     vm_reset_stack(vm)
+}
+
+define_native :: proc(vm: ^VM, name: string, function: NativeFn) {
+    name_object := copy_string(vm, name)
+    push(vm, val_obj(name_object))
+    push(vm, val_obj(new_native(vm, function, name_object)))
+    table_set(&vm.globals, as_string(peek(vm, 1)), peek(vm, 0))
+    drop(vm, 2)
 }
 
 interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
@@ -131,6 +145,17 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, agr_coun
         #partial switch obj_type(callee) {
             case .Function:
                 return call(vm, as_function(callee), agr_count)
+            case .Native:
+                context = runtime.default_context()
+                native := as_native(callee)
+
+                if result, ok := native(vm, vm.stack[vm.sp - agr_count : vm.sp]); ok {
+                    vm.sp -= agr_count + 1
+                    push(vm, result)
+                    return true
+                }
+
+                return false
         }
     }
     runtime_error(vm, "Can only call functions and classes.")
@@ -245,7 +270,7 @@ vm_run :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
         }
         fmt.println()
 
-        disassemble_instruction(frame.function.chunk, frame.ip)
+        disassemble_instruction(&frame.function.chunk, frame.ip)
     }
 
     return #must_tail LUT[Opcode(read_byte(frame))](vm, frame)

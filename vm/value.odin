@@ -27,6 +27,13 @@ as_function :: #force_inline proc "contextless" (v: Value) -> ^ObjectFunction {
     return nil
 }
 
+as_native :: #force_inline proc "contextless" (v: Value) -> NativeFn {
+    if obj, ok := v.(^Object); ok {
+        return (cast(^ObjectNative)obj).function
+    }
+    return nil
+}
+
 as_string :: #force_inline proc "contextless" (v: Value) -> ^ObjectString {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectString)obj

@@ -91,6 +91,8 @@ compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) 
     local := &compiler.locals[compiler.local_count]
     local.depth = 0
     local.name.lexeme = ""
+    
+    compiler.local_count += 1
 }
 
 @(private="file")
@@ -226,7 +228,7 @@ end_compiler :: proc(parser: ^Parser) -> ^ObjectFunction {
 
     when DEW_DEBUG_PRINT_CODE {
         if !parser.had_error {
-            disassemble_chunk(function.chunk, function.name != nil ? function.name.chars : "<script>")
+            disassemble_chunk(&function.chunk, function.name != nil ? function.name.chars : "<script>")
         }
     }
 
