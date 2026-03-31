@@ -42,22 +42,27 @@ Local :: struct {
     depth: int,
 }
 
+FunctionType :: enum u8 {
+    Function,
+    Script,
+}
+
 Compiler :: struct {
-    chunk: ^Chunk,
+    enclosing: ^Compiler,
+    function: ^ObjectFunction,
+    type: FunctionType,
     locals: [LOCAL_MAX]Local,
     local_count: int,
     scope_depth: int,
 }
 
-compile :: proc(vm: ^VM, source: string, chunk: ^Chunk) -> bool {
-    compiler: Compiler
-    compiler.chunk = chunk
-
+compile :: proc(vm: ^VM, source: string) -> ^ObjectFunction {
     parser: Parser
     scanner_init(&parser.scanner, source)
-
     parser.vm = vm
-    parser.compiler = &compiler
+    
+    compiler: Compiler
+    compiler_init(&parser, &compiler, .Script)
 
     advance(&parser)
     
@@ -65,8 +70,32 @@ compile :: proc(vm: ^VM, source: string, chunk: ^Chunk) -> bool {
         declaration(&parser)
     }
 
-    end_compiler(&parser)
-    return !parser.had_error
+    function := end_compiler(&parser)
+    return parser.had_error ? nil : function
+}
+
+@(private="file")
+compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) {
+    compiler.enclosing = parser.compiler
+    parser.compiler = compiler
+
+    compiler.type = type
+    compiler.local_count = 0
+    compiler.scope_depth = 0
+    compiler.function = new_function(parser.vm)
+
+    if type != .Script {
+        parser.compiler.function.name = copy_string(parser.vm, parser.previous.lexeme)
+    }
+
+    local := &compiler.locals[compiler.local_count]
+    local.depth = 0
+    local.name.lexeme = ""
+}
+
+@(private="file")
+current_chunk :: #force_inline proc(parser: ^Parser) -> ^Chunk {
+    return &parser.compiler.function.chunk
 }
 
 @(private="file")
@@ -92,9 +121,7 @@ consume :: proc(parser: ^Parser, type: TokenType, message: string) {
 
 @(private="file")
 consume_terminator :: proc(parser: ^Parser, message: string) {
-    if match(parser, .Semicolon) do return
-    if check(parser, .RightBrace) || check(parser, .Eof) do return
-    if parser.current.line > parser.previous.line do return
+    if match_terminator(parser) do return
     error_at_current(parser, message)
 }
 
@@ -119,8 +146,16 @@ match :: proc(parser: ^Parser, type: TokenType) -> bool {
 }
 
 @(private="file")
+match_terminator :: proc(parser: ^Parser) -> bool {
+    if match(parser, .Semicolon) do return true
+    if check(parser, .RightBrace) || check(parser, .Eof) do return true
+    if parser.current.line > parser.previous.line do return true
+    return false
+}
+
+@(private="file")
 emit_byte :: proc(parser: ^Parser , byte: u8) {
-    chunk_write(parser.compiler.chunk, byte, parser.previous.line)
+    chunk_write(current_chunk(parser), byte, parser.previous.line)
 }
 
 @(private="file")
@@ -131,7 +166,7 @@ emit_bytes :: proc(parser: ^Parser, byte1, byte2: u8) {
 
 @(private="file")
 emit_loop :: proc(parser: ^Parser, loop_start: int) {
-    offset := len(parser.compiler.chunk.instructions) - loop_start + 3
+    offset := len(current_chunk(parser).instructions) - loop_start + 3
     if offset > int(max(u16)) do error(parser, "Loop body too large.")
 
     emit_short(parser, .Loop, u16(offset))
@@ -140,7 +175,7 @@ emit_loop :: proc(parser: ^Parser, loop_start: int) {
 @(private="file")
 emit_jump :: proc(parser: ^Parser, op: Opcode) -> int {
     emit_short(parser, op, 0xFFFF)
-    return len(parser.compiler.chunk.instructions) - 2
+    return len(current_chunk(parser).instructions) - 2
 }
 
 @(private="file")
@@ -151,12 +186,13 @@ emit_short :: proc(parser: ^Parser, opcode: Opcode, operand: u16) {
 
 @(private="file")
 emit_return :: proc(parser: ^Parser) {
+    emit_byte(parser, u8(Opcode.Nil))
     emit_byte(parser, u8(Opcode.Return))
 }
 
 @(private="file")
 make_constant :: proc(parser: ^Parser, value: Value) -> u16 {
-    constant := chunk_add_constant(parser.compiler.chunk, value)
+    constant := chunk_add_constant(current_chunk(parser), value)
 
     if constant > int(max(u16)) {
         error(parser, "Too many constants in one chunk.")
@@ -173,24 +209,29 @@ emit_constant :: proc(parser: ^Parser, value: Value) {
 
 @(private="file")
 patch_jump :: proc(parser: ^Parser, offset: int) {
-    jump := len(parser.compiler.chunk.instructions) -offset - 2
+    jump := len(current_chunk(parser).instructions) -offset - 2
 
     if jump > int(max(u16)) {
         error(parser, "Too much code to jump over.")
     }
 
-    parser.compiler.chunk.instructions[offset] = u8(jump & 0xFF)
-    parser.compiler.chunk.instructions[offset + 1] = u8((jump >> 8) & 0xFF)
+    current_chunk(parser).instructions[offset] = u8(jump & 0xFF)
+    current_chunk(parser).instructions[offset + 1] = u8((jump >> 8) & 0xFF)
 }
 
 @(private="file")
-end_compiler :: proc(parser: ^Parser) {
+end_compiler :: proc(parser: ^Parser) -> ^ObjectFunction {
     emit_return(parser)
+    function := parser.compiler.function
+
     when DEW_DEBUG_PRINT_CODE {
         if !parser.had_error {
-            disassemble_Chunk(parser.compiler.chunk, "code")
+            disassemble_chunk(function.chunk, function.name != nil ? function.name.chars : "<script>")
         }
     }
+
+    parser.compiler = parser.compiler.enclosing
+    return function
 }
 
 @(private="file")
@@ -228,6 +269,12 @@ binary :: proc(parser: ^Parser, can_assign: bool) {
         case .Star:         emit_byte(parser, u8(Opcode.Mul))
         case .Slash:        emit_byte(parser, u8(Opcode.Div))
     }
+}
+
+@(private="file")
+call :: proc(parser: ^Parser, can_assign: bool) {
+    arg_count := argument_list(parser)
+    emit_bytes(parser, u8(Opcode.Call), arg_count)
 }
 
 @(private="file")
@@ -306,7 +353,7 @@ unary :: proc(parser: ^Parser, can_assign: bool) {
 
 @(private="file", rodata)
 rules := #partial [TokenType]ParseRule{
-    .LeftParen    = {grouping, nil, .None},
+    .LeftParen    = {grouping, call, .Call},
     .Minus        = {unary, binary, .Term},
     .Plus         = {nil, binary, .Term},
     .Slash        = {nil, binary, .Factor},
@@ -418,6 +465,7 @@ parse_variable :: proc(parser: ^Parser, error_mesage: string) -> u16 {
 
 @(private="file")
 mark_initialized :: proc(parser: ^Parser) {
+    if parser.compiler.scope_depth == 0 do return
     parser.compiler.locals[parser.compiler.local_count - 1].depth = parser.compiler.scope_depth
 }
 
@@ -429,6 +477,23 @@ define_variable :: proc(parser: ^Parser, global: u16) {
     }
 
     emit_short(parser, .DefineGlobal, global)
+}
+
+@(private="file")
+argument_list :: proc(parser: ^Parser) -> u8 {
+    arg_count: u8
+    if !check(parser, .RightParen) {
+        for {
+            expression(parser)
+            if arg_count == 255 {
+                error(parser, "Can't have more than 255 arguments.")
+            }
+            arg_count += 1
+            if !match(parser, .Comma) do break
+        }
+    }
+    consume(parser, .RightParen, "Expect ')' after arguments.")
+    return arg_count
 }
 
 @(private="file")
@@ -452,6 +517,41 @@ block :: proc(parser: ^Parser) {
     }
 
     consume(parser, .RightBrace, "Expect '}' after block.")
+}
+
+@(private="file")
+function :: proc(parser: ^Parser, type: FunctionType) {
+    compiler: Compiler
+    compiler_init(parser, &compiler, type)
+    begin_scope(parser)
+
+    consume(parser, .LeftParen, "Expect '(' after function name.")
+    if !check(parser, .RightParen) {
+        for {
+            parser.compiler.function.arity += 1
+            if parser.compiler.function.arity > 255 {
+                error_at_current(parser, "Can't have more than 255 parameters.")
+            }
+            constant := parse_variable(parser, "Expect parameter name.")
+            define_variable(parser, constant)
+            
+            if !match(parser, .Comma) do break
+        }
+    }
+    consume(parser, .RightParen, "Expect ')' after parameters.")
+    consume(parser, .LeftBrace, "Expect '{' before function body.")
+    block(parser)
+
+    function := end_compiler(parser)
+    emit_short(parser, .Constant, make_constant(parser, val_obj(function)))
+}
+
+@(private="file")
+fn_declaration :: proc(parser: ^Parser) {
+    global := parse_variable(parser, "Expect function name.")
+    mark_initialized(parser)
+    function(parser, .Function)
+    define_variable(parser, global)
 }
 
 @(private="file")
@@ -487,7 +587,7 @@ for_statement :: proc(parser: ^Parser) {
         expression_statement(parser)
     }
 
-    loop_start := len(parser.compiler.chunk.instructions)
+    loop_start := len(current_chunk(parser).instructions)
     exit_jump := -1
     if !match(parser, .Semicolon) {
         expression(parser)
@@ -499,7 +599,7 @@ for_statement :: proc(parser: ^Parser) {
 
     if !check(parser, .LeftBrace) {
         body_jump := emit_jump(parser, .Jump)
-        increment_start := len(parser.compiler.chunk.instructions)
+        increment_start := len(current_chunk(parser).instructions)
         expression(parser)
         emit_byte(parser, u8(Opcode.Pop))
 
@@ -552,8 +652,23 @@ print_statement :: proc(parser: ^Parser) {
 }
 
 @(private="file")
+return_statement :: proc(parser: ^Parser) {
+    if parser.compiler.type == .Script {
+        error(parser, "Can't return from top-level code.")
+    }
+
+    if match_terminator(parser) {
+        emit_return(parser)
+    } else {
+        expression(parser)
+        consume_terminator(parser, "Expect ';' after return value.")
+        emit_byte(parser, u8(Opcode.Return))
+    }
+}
+
+@(private="file")
 while_statement :: proc(parser: ^Parser) {
-    loop_start := len(parser.compiler.chunk.instructions)
+    loop_start := len(current_chunk(parser).instructions)
 
     expression(parser)
 
@@ -576,7 +691,7 @@ synchronize :: proc(parser: ^Parser) {
         if parser.previous.type == .Semicolon do return
 
         #partial switch parser.current.type {
-            case .Class, .chunk, .Var, .For, .If, .While, .Print, .Return:  return
+            case .Class, .Fn, .Var, .For, .If, .While, .Print, .Return:  return
         }
 
         advance(parser)
@@ -585,7 +700,9 @@ synchronize :: proc(parser: ^Parser) {
 
 @(private="file")
 declaration :: proc(parser: ^Parser) {
-    if match(parser, .Var) {
+    if match(parser, .Fn) {
+        fn_declaration(parser)
+    } else if match(parser, .Var) {
         var_declaration(parser)
     } else {
         statement(parser)
@@ -602,6 +719,8 @@ statement :: proc(parser: ^Parser) {
         for_statement(parser)
     } else if match(parser, .If) {
         if_statement(parser)
+    } else if match(parser, .Return) {
+        return_statement(parser)
     } else if match(parser, .While) {
         while_statement(parser)
     } else if match(parser, .LeftBrace) {

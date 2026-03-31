@@ -20,6 +20,27 @@ print_value :: proc(value: Value) {
     }
 }
 
+as_function :: #force_inline proc "contextless" (v: Value) -> ^ObjectFunction {
+    if obj, ok := v.(^Object); ok {
+        return cast(^ObjectFunction)obj
+    }
+    return nil
+}
+
+as_string :: #force_inline proc "contextless" (v: Value) -> ^ObjectString {
+    if obj, ok := v.(^Object); ok {
+        return cast(^ObjectString)obj
+    }
+    return nil
+}
+
+as_object :: #force_inline proc "contextless" (v: Value) -> ^Object {
+    if obj, ok := v.(^Object); ok {
+        return obj
+    }
+    return nil
+}
+
 val_nil :: #force_inline proc "contextless" () -> Value {
     return Value(Nil{})
 }
@@ -41,11 +62,9 @@ is_nil :: #force_inline proc "contextless" (v: Value) -> bool {
     return ok
 }
 
-as_string :: #force_inline proc "contextless" (v: Value) -> ^ObjectString {
-    if obj, ok := v.(^Object); ok {
-        return cast(^ObjectString)obj
-    }
-    return nil
+is_obj :: #force_inline proc "contextless" (v: Value) -> bool {
+    _, ok := v.(^Object)
+    return ok
 }
 
 check_number :: #force_inline proc "contextless" (v: Value) -> (f64, bool) {
@@ -61,4 +80,8 @@ check_string :: #force_inline proc "contextless" (v: Value) -> (^ObjectString, b
         return cast(^ObjectString)obj, true
     }
     return nil, false
+}
+
+obj_type :: #force_inline proc "contextless" (v: Value) -> ObjectType {
+    return as_object(v).type
 }

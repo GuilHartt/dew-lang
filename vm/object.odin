@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:strings"
 
 ObjectType :: enum u8 {
+    Function,
     String,
 }
 
@@ -13,10 +14,18 @@ Object :: struct {
     next: ^Object,
 }
 
+ObjectFunction :: struct {
+    using obj: Object,
+    arity: int,
+    chunk: Chunk,
+    name: ^ObjectString,
+}
+
 ObjectString :: struct {
     using obj: Object,
-    chars:     string,
-    hash:      u32,
+    hash: u32,
+    chars: string,
+    
 }
 
 @(private="file")
@@ -59,7 +68,23 @@ take_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
 @(private)
 print_object :: proc(object: ^Object) {
     switch object.type {
+        case .Function:
+            print_function(cast(^ObjectFunction)object)
         case .String:
             fmt.print(( cast(^ObjectString)object).chars)
     }
+}
+
+@(private)
+print_function :: proc(function: ^ObjectFunction) {
+    if function.name == nil {
+        fmt.print("<script>")
+        return
+    }
+    fmt.printf("<fn %s>", function.name.chars)
+}
+
+new_function :: proc(vm: ^VM) -> ^ObjectFunction {
+    function := allocate_object(vm, ObjectFunction, .Function)
+    return function
 }

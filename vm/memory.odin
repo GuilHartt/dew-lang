@@ -3,10 +3,14 @@ package vm
 @(private)
 free_object :: proc(object: ^Object) {
     switch object.type {
+        case .Function:
+            function := cast(^ObjectFunction)object
+            chunk_free(&function.chunk)
+            free(function)
         case .String:
-            str := cast(^ObjectString)object
-            delete(str.chars)
-            free(str)
+            string := cast(^ObjectString)object
+            delete(string.chars)
+            free(string)
     }
 }
 

@@ -2,7 +2,7 @@ package vm
 
 import "core:fmt"
 
-disassemble_Chunk :: proc(chunk: ^Chunk, name: string) {
+disassemble_chunk :: proc(chunk: ^Chunk, name: string) {
     fmt.printfln("== %s ==", name)
 
     offset := 0
@@ -26,7 +26,7 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
             return constant_instruction(instruction, chunk, offset)
         case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .Return:
             return simple_instruction(instruction, offset)
-        case .SetLocal, .GetLocal:
+        case .SetLocal, .GetLocal, .Call:
             return byte_instruction(instruction, chunk, offset)
         case .Loop:
             return jump_instruction(instruction, -1, chunk, offset)
