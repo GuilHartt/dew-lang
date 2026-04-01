@@ -24,14 +24,37 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
     switch instruction {
         case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal:
             return constant_instruction(instruction, chunk, offset)
-        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .Return:
+        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .CloseUpvalue, .Return:
             return simple_instruction(instruction, offset)
-        case .SetLocal, .GetLocal, .Call:
+        case .SetLocal, .GetLocal, .Call, .GetUpvalue, .SetUpvalue:
             return byte_instruction(instruction, chunk, offset)
         case .Loop:
             return jump_instruction(instruction, -1, chunk, offset)
         case .Jump, .JumpIfFalse:
             return jump_instruction(instruction, 1, chunk, offset)
+        case .Closure:
+            offset := offset
+            constant := u16(chunk.instructions[offset + 1]) | (u16(chunk.instructions[offset + 2]) << 8)
+            fmt.printf("%-16v %4d ", instruction, constant)
+            print_value(chunk.constants[constant])
+            fmt.println()
+
+            function := as_function(chunk.constants[constant])
+            offset += 3
+
+            for i in 0 ..< function.upvalue_count {
+                is_local := chunk.instructions[offset]
+                index := chunk.instructions[offset + 1]
+                
+                fmt.printf("%04d      |                     %s %d\n",
+                    offset,
+                    is_local == 1 ? "local" : "upvalue",
+                    index)
+                
+                offset += 2
+            }
+            
+            return offset
         case:
             fmt.printfln("Unknown opcode %v", instruction)
             return offset + 1

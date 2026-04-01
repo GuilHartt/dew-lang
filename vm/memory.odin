@@ -3,6 +3,10 @@ package vm
 @(private)
 free_object :: proc(object: ^Object) {
     switch object.type {
+        case .Closure:
+            closure := cast(^ObjectClosure)object
+            delete(closure.upvalues)
+            free(closure)
         case .Function:
             function := cast(^ObjectFunction)object
             chunk_free(&function.chunk)
@@ -14,6 +18,9 @@ free_object :: proc(object: ^Object) {
             string := cast(^ObjectString)object
             delete(string.chars)
             free(string)
+        case .Upvalue:
+            upvalue := cast(^ObjectUpvalue)object
+            free(upvalue)
     }
 }
 

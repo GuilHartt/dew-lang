@@ -9,7 +9,7 @@ FRAMES_MAX :: 64
 STACK_MAX :: FRAMES_MAX * (int(max(u8)) + 1)
 
 CallFrame :: struct {
-    function: ^ObjectFunction,
+    closure: ^ObjectClosure,
     ip: int,
     slots: int,
 }
@@ -25,6 +25,7 @@ VM :: struct {
     sp: int,
     globals: Table,
     strings: Table,
+    open_upvalues: ^ObjectUpvalue,
     objects: ^Object,
 }
 
@@ -51,6 +52,7 @@ destroy :: proc(vm: ^VM) {
 vm_reset_stack :: proc(vm: ^VM) {
     vm.sp = 0
     vm.fp = 0
+    vm.open_upvalues = nil
 }
 
 @(private="file", cold)
@@ -60,7 +62,7 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
 
     for i := vm.fp - 1; i >= 0; i -= 1 {
         frame := &vm.frames[i]
-        function := frame.function
+        function := frame.closure.function
 
         instruction := frame.ip - 1
         fmt.eprintf("line [%d] in ", chunk_get_line(&function.chunk, instruction))
@@ -87,14 +89,12 @@ interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
     if function == nil do return .CompileError
 
     push(vm, val_obj(function))
+    closure := new_closure(vm, function)
+    drop(vm)
+    push(vm, val_obj(closure))
+    call(vm, closure, 0)
 
-    frame := &vm.frames[vm.fp]
-    vm.fp += 1
-    frame.function = function
-    frame.ip = 0
-    frame.slots = 0
-
-    return vm_run(vm, frame)
+    return vm_run(vm, &vm.frames[vm.fp - 1])
 }
 
 @(private)
@@ -120,9 +120,9 @@ peek :: #force_inline proc "contextless" (vm: ^VM, distance: int) -> Value {
 }
 
 @(private)
-call :: #force_inline proc "contextless" (vm: ^VM, function: ^ObjectFunction, arg_count: int) -> bool {
-    if arg_count != function.arity {
-        runtime_error(vm, "Expected %d arguments but got %d.", function.arity, arg_count)
+call :: #force_inline proc "contextless" (vm: ^VM, closure: ^ObjectClosure, arg_count: int) -> bool {
+    if arg_count != closure.function.arity {
+        runtime_error(vm, "Expected %d arguments but got %d.", closure.function.arity, arg_count)
         return false
     }
 
@@ -133,24 +133,24 @@ call :: #force_inline proc "contextless" (vm: ^VM, function: ^ObjectFunction, ar
 
     frame := &vm.frames[vm.fp]
     vm.fp += 1
-    frame.function = function
+    frame.closure = closure
     frame.ip = 0
     frame.slots = vm.sp - arg_count - 1
     return true
 }
 
 @(private)
-call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, agr_count: int) -> bool {
+call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_count: int) -> bool {
     if is_obj(callee)  {
         #partial switch obj_type(callee) {
-            case .Function:
-                return call(vm, as_function(callee), agr_count)
+            case .Closure:
+                return call(vm, as_closure(callee), arg_count)
             case .Native:
                 context = runtime.default_context()
                 native := as_native(callee)
 
-                if result, ok := native(vm, vm.stack[vm.sp - agr_count : vm.sp]); ok {
-                    vm.sp -= agr_count + 1
+                if result, ok := native(vm, vm.stack[vm.sp - arg_count : vm.sp]); ok {
+                    vm.sp -= arg_count + 1
                     push(vm, result)
                     return true
                 }
@@ -160,6 +160,43 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, agr_coun
     }
     runtime_error(vm, "Can only call functions and classes.")
     return false
+}
+
+@(private)
+capture_upvalue :: proc "contextless" (vm: ^VM, local: ^Value) -> ^ObjectUpvalue {
+    context = runtime.default_context()
+
+    prev_upvalue: ^ObjectUpvalue
+    upvalue := vm.open_upvalues
+    for upvalue != nil && upvalue.location > local {
+        prev_upvalue = upvalue
+        upvalue = upvalue.next_upvalue
+    }
+
+    if upvalue != nil && upvalue.location == local {
+        return upvalue
+    }
+
+    created_upvalue := new_upvalue(vm, local)
+    created_upvalue.next_upvalue = upvalue
+
+    if prev_upvalue == nil {
+        vm.open_upvalues = created_upvalue
+    } else {
+        prev_upvalue.next_upvalue = created_upvalue
+    }
+
+    return created_upvalue
+}
+
+@(private="file")
+close_upvalues :: proc "contextless" (vm: ^VM, last: ^Value) {
+    for vm.open_upvalues != nil && vm.open_upvalues.location >= last {
+        upvalue := vm.open_upvalues
+        upvalue.closed = upvalue.location^
+        upvalue.location = &upvalue.closed
+        vm.open_upvalues = upvalue.next_upvalue
+    }
 }
 
 @(private="file")
@@ -183,23 +220,20 @@ concatenate :: #force_inline proc "contextless" (vm: ^VM, lhs, rhs: ^ObjectStrin
 
 @(private="file")
 read_byte :: #force_inline proc "contextless" (frame: ^CallFrame) -> u8 {
-    b := frame.function.chunk.instructions[frame.ip]
+    b := frame.closure.function.chunk.instructions[frame.ip]
     frame.ip += 1
     return b
 }
 
 @(private="file")
 read_short :: #force_inline proc "contextless" (frame: ^CallFrame) -> u16 {
-    low := u16(frame.function.chunk.instructions[frame.ip])
-    high := u16(frame.function.chunk.instructions[frame.ip + 1])
-    frame.ip += 2
-    return low | (high << 8)
+    return u16(read_byte(frame)) | (u16(read_byte(frame)) << 8)
 }
 
 @(private="file")
 read_constant :: #force_inline proc "contextless" (frame: ^CallFrame) -> Value {
     index := read_short(frame)
-    return frame.function.chunk.constants[index]
+    return frame.closure.function.chunk.constants[index]
 }
 
 @(private="file")
@@ -235,6 +269,8 @@ LUT := [Opcode]OpcodeProc {
     .GetGlobal    = do_get_global,
     .DefineGlobal = do_define_global,
     .SetGlobal    = do_set_global,
+    .GetUpvalue   = do_get_upvalue,
+    .SetUpvalue   = do_set_upvalue,
     .Equal        = do_equal,
     .Greater      = do_greater,
     .Less         = do_less,
@@ -249,13 +285,15 @@ LUT := [Opcode]OpcodeProc {
     .JumpIfFalse  = do_jump_if_false,
     .Loop         = do_loop,
     .Call         = do_call,
+    .Closure      = do_closure,
+    .CloseUpvalue = do_close_upvalue,
     .Return       = do_return,
 }
 
 @(private)
 vm_run :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 
-    if frame.ip >= len(frame.function.chunk.instructions) {
+    if frame.ip >= len(frame.closure.function.chunk.instructions) {
         return .Ok
     }
 
@@ -349,6 +387,20 @@ do_set_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretR
         runtime_error(vm, "Undefined variable '%s'.", name.chars)
         return .RuntimeError
     }
+    return #must_tail vm_run(vm, frame)
+}
+
+@(private="file")
+do_get_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+    slot := read_byte(frame)
+    push(vm, frame.closure.upvalues[slot].location^)
+    return #must_tail vm_run(vm, frame)
+}
+
+@(private="file")
+do_set_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+    slot := read_byte(frame)
+    frame.closure.upvalues[slot].location^ = peek(vm, 0)
     return #must_tail vm_run(vm, frame)
 }
 
@@ -477,8 +529,36 @@ do_call :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult 
 }
 
 @(private="file")
+do_closure :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+    context = runtime.default_context()
+    function := as_function(read_constant(frame))
+    closure := new_closure(vm, function)
+    push(vm, val_obj(closure))
+
+    for i in 0..<len(closure.upvalues) {
+        is_local := read_byte(frame)
+        index := int(read_byte(frame))
+        if is_local == 1 {
+            closure.upvalues[i] = capture_upvalue(vm, &vm.stack[frame.slots + index])
+        } else {
+            closure.upvalues[i] = frame.closure.upvalues[index]
+        }
+    }  
+
+    return #must_tail vm_run(vm, frame)
+}
+
+@(private="file")
+do_close_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+    close_upvalues(vm, &vm.stack[vm.sp - 1])
+    drop(vm)
+    return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
+}
+
+@(private="file")
 do_return :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
     result := pop(vm)
+    close_upvalues(vm, &vm.stack[frame.slots])
     vm.fp -= 1
 
     if vm.fp == 0 {

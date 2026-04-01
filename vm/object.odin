@@ -5,9 +5,11 @@ import "core:fmt"
 import "core:strings"
 
 ObjectType :: enum u8 {
+    Closure,
     Function,
     Native,
     String,
+    Upvalue,
 }
 
 Object :: struct {
@@ -18,6 +20,7 @@ Object :: struct {
 ObjectFunction :: struct {
     using obj: Object,
     arity: int,
+    upvalue_count: int,
     chunk: Chunk,
     name: ^ObjectString,
 }
@@ -35,6 +38,19 @@ ObjectString :: struct {
     hash: u32,
     chars: string,
     
+}
+
+ObjectUpvalue :: struct {
+    using obj: Object,
+    location: ^Value,
+    closed: Value,
+    next_upvalue: ^ObjectUpvalue,
+}   
+
+ObjectClosure :: struct {
+    using obj: Object,
+    function: ^ObjectFunction,
+    upvalues: []^ObjectUpvalue,
 }
 
 @(private="file")
@@ -77,12 +93,16 @@ take_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
 @(private)
 print_object :: proc(object: ^Object) {
     switch object.type {
+        case .Closure:
+            print_function((cast(^ObjectClosure)object).function)
         case .Function:
             print_function(cast(^ObjectFunction)object)
         case .Native:
             fmt.print(( cast(^ObjectNative)object).name.chars)
         case .String:
             fmt.print(( cast(^ObjectString)object).chars)
+        case .Upvalue:
+            fmt.print("upvalue")
     }
 }
 
@@ -105,4 +125,18 @@ new_native :: proc(vm: ^VM, function: NativeFn, name: ^ObjectString) -> ^ObjectN
     native.function = function
     native.name = name
     return native
+}
+
+new_upvalue :: proc(vm: ^VM, slot: ^Value) -> ^ObjectUpvalue {
+    upvalue := allocate_object(vm, ObjectUpvalue, .Upvalue)
+    upvalue.closed = val_nil()
+    upvalue.location = slot
+    return upvalue
+}
+
+new_closure :: proc(vm: ^VM, function: ^ObjectFunction) -> ^ObjectClosure {
+    closure := allocate_object(vm, ObjectClosure, .Closure)
+    closure.function = function
+    closure.upvalues = make([]^ObjectUpvalue, function.upvalue_count)
+    return closure
 }

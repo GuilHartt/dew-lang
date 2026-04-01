@@ -11,6 +11,8 @@ Opcode :: enum u8 {
     GetGlobal,
     DefineGlobal,
     SetGlobal,
+    GetUpvalue,
+    SetUpvalue,
     Equal,
     Greater,
     Less,
@@ -25,5 +27,7 @@ Opcode :: enum u8 {
     JumpIfFalse,
     Loop,
     Call,
+    Closure,
+    CloseUpvalue,
     Return,
 }

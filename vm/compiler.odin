@@ -40,6 +40,12 @@ ParseRule :: struct {
 Local :: struct {
     name: Token,
     depth: int,
+    is_captured: bool,
+}
+
+Upvalue :: struct {
+    index: u8,
+    is_local: bool,
 }
 
 FunctionType :: enum u8 {
@@ -53,6 +59,7 @@ Compiler :: struct {
     type: FunctionType,
     locals: [LOCAL_MAX]Local,
     local_count: int,
+    upvalues: [LOCAL_MAX]Upvalue,
     scope_depth: int,
 }
 
@@ -89,10 +96,10 @@ compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) 
     }
 
     local := &compiler.locals[compiler.local_count]
-    local.depth = 0
-    local.name.lexeme = ""
-    
     compiler.local_count += 1
+    local.depth = 0
+    local.is_captured = false
+    local.name.lexeme = ""
 }
 
 @(private="file")
@@ -248,7 +255,11 @@ end_scope :: proc(parser: ^Parser) {
     current.scope_depth -= 1
 
     for current.local_count > 0 && current.locals[current.local_count - 1].depth > current.scope_depth {
-        emit_byte(parser, u8(Opcode.Pop))
+        if current.locals[current.local_count - 1].is_captured {
+            emit_byte(parser, u8(Opcode.CloseUpvalue))
+        } else {
+            emit_byte(parser, u8(Opcode.Pop))
+        }
         current.local_count -= 1
     }
 }
@@ -319,20 +330,30 @@ parse_string :: proc(parser: ^Parser, can_assign: bool) {
 }
 
 named_variable :: proc(parser: ^Parser, name: ^Token, can_assign: bool) {
-    arg := resolve_local(parser, name)
-    is_local := arg != -1
-
-    if !is_local {
+    get_op, set_op: Opcode
+    arg := resolve_local(parser, parser.compiler, name)
+    if arg != -1 {
+        get_op, set_op = .GetLocal, .SetLocal
+    } else if arg = resolve_upvalue(parser, parser.compiler, name); arg != -1 {
+        get_op, set_op = .GetUpvalue, .SetUpvalue
+    } else {
         arg = int(identifier_constant(parser, name))
+        get_op, set_op = .GetGlobal, .SetGlobal
     }
 
     if can_assign && match(parser, .Equal) {
         expression(parser)
-        if is_local do emit_bytes(parser, u8(Opcode.SetLocal), u8(arg))
-        else        do emit_short(parser, .SetGlobal, u16(arg))
+        if set_op == .SetGlobal {
+            emit_short(parser, set_op, u16(arg))
+        } else {
+            emit_bytes(parser, u8(set_op), u8(arg))
+        }
     } else {
-        if is_local do emit_bytes(parser, u8(Opcode.GetLocal), u8(arg))
-        else        do emit_short(parser, .GetGlobal, u16(arg))
+        if get_op == .GetGlobal {
+            emit_short(parser, get_op, u16(arg))
+        } else {
+            emit_bytes(parser, u8(get_op), u8(arg))
+        }
     }
 }
 
@@ -408,15 +429,55 @@ identifier_constant :: proc(parser: ^Parser, name: ^Token) -> u16 {
 }
 
 @(private="file")
-resolve_local :: proc(parser: ^Parser, name: ^Token) -> int {
-    for i := parser.compiler.local_count -1; i >= 0; i -= 1 {
-        local := &parser.compiler.locals[i]
+resolve_local :: proc(parser: ^Parser, compiler: ^Compiler, name: ^Token) -> int {
+    for i := compiler.local_count -1; i >= 0; i -= 1 {
+        local := &compiler.locals[i]
         if name.lexeme == local.name.lexeme {
             if local.depth == -1 {
                 error(parser, "Can't read local variable in its own initializer.")
             }
             return i
         }
+    }
+
+    return -1
+}
+
+@(private="file")
+add_upvalue :: proc(parser: ^Parser, compiler: ^Compiler, index: u8, is_local: bool) -> int {
+    upvalue_count := compiler.function.upvalue_count
+
+    for i in 0..<upvalue_count {
+        upvalue := &compiler.upvalues[i]
+        if upvalue.index == index && upvalue.is_local == is_local {
+            return i
+        }
+    }
+
+    if upvalue_count == LOCAL_MAX {
+        error(parser, "Too many closure variables in function.")
+        return 0
+    }
+
+    compiler.upvalues[upvalue_count].is_local = is_local
+    compiler.upvalues[upvalue_count].index = index
+    compiler.function.upvalue_count += 1
+    return upvalue_count
+}
+
+@(private="file")
+resolve_upvalue :: proc(parser: ^Parser, compiler: ^Compiler, name: ^Token) -> int {
+    if compiler.enclosing == nil do return -1
+
+    local := resolve_local(parser, compiler.enclosing, name)
+    if local != -1 {
+        compiler.enclosing.locals[local].is_captured = true
+        return add_upvalue(parser, compiler, u8(local), true)
+    }
+
+    upvalue := resolve_upvalue(parser, compiler.enclosing, name)
+    if upvalue != -1 {
+        return add_upvalue(parser, compiler, u8(upvalue), false)
     }
 
     return -1
@@ -450,9 +511,10 @@ add_local :: proc(parser: ^Parser, name: Token) {
     }
 
     local := &parser.compiler.locals[parser.compiler.local_count]
+    parser.compiler.local_count += 1
     local.name = name
     local.depth = -1
-    parser.compiler.local_count += 1
+    local.is_captured = false 
 }
 
 @(private="file")
@@ -545,7 +607,12 @@ function :: proc(parser: ^Parser, type: FunctionType) {
     block(parser)
 
     function := end_compiler(parser)
-    emit_short(parser, .Constant, make_constant(parser, val_obj(function)))
+    emit_short(parser, .Closure, make_constant(parser, val_obj(function)))
+
+    for i in 0..<function.upvalue_count {
+        emit_byte(parser, compiler.upvalues[i].is_local ? 1 : 0)
+        emit_byte(parser, compiler.upvalues[i].index)
+    }
 }
 
 @(private="file")

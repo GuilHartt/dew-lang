@@ -20,6 +20,13 @@ print_value :: proc(value: Value) {
     }
 }
 
+as_closure :: #force_inline proc "contextless" (v: Value) -> ^ObjectClosure {
+    if obj, ok := v.(^Object); ok {
+        return cast(^ObjectClosure)obj
+    }
+    return nil
+}
+
 as_function :: #force_inline proc "contextless" (v: Value) -> ^ObjectFunction {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectFunction)obj
