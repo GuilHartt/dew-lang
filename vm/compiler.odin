@@ -1,828 +1,859 @@
 package vm
 
-import "core:strconv"
 import "core:fmt"
+import "core:strconv"
 
 LOCAL_MAX :: int(max(u8)) + 1
 
 Parser :: struct {
-    current:    Token,
-    previous:   Token,
-    had_error:  bool,
-    panic_mode: bool,
-    scanner:    Scanner,
-    compiler:   ^Compiler,
-    vm:         ^VM,
+	current:    Token,
+	previous:   Token,
+	had_error:  bool,
+	panic_mode: bool,
+	scanner:    Scanner,
+	compiler:   ^Compiler,
+	vm:         ^VM,
 }
 
 Precedence :: enum u8 {
-    None,
-    Assignment,
-    Or,
-    And,
-    Equality,
-    Comparison,
-    Term,
-    Factor,
-    Unary,
-    Call,
-    Primary,
+	None,
+	Assignment,
+	Or,
+	And,
+	Equality,
+	Comparison,
+	Term,
+	Factor,
+	Unary,
+	Call,
+	Primary,
 }
 
 ParseProc :: #type proc(parser: ^Parser, can_assign: bool)
 
 ParseRule :: struct {
-    prefix: ParseProc,
-    infix: ParseProc,
-    precedence: Precedence,
+	prefix:     ParseProc,
+	infix:      ParseProc,
+	precedence: Precedence,
 }
 
 Local :: struct {
-    name: Token,
-    depth: int,
-    is_captured: bool,
+	name:        Token,
+	depth:       int,
+	is_captured: bool,
 }
 
 Upvalue :: struct {
-    index: u8,
-    is_local: bool,
+	index:    u8,
+	is_local: bool,
 }
 
 FunctionType :: enum u8 {
-    Function,
-    Script,
+	Function,
+	Script,
 }
 
 Compiler :: struct {
-    enclosing: ^Compiler,
-    function: ^ObjectFunction,
-    type: FunctionType,
-    locals: [LOCAL_MAX]Local,
-    local_count: int,
-    upvalues: [LOCAL_MAX]Upvalue,
-    scope_depth: int,
+	enclosing:   ^Compiler,
+	function:    ^ObjectFunction,
+	type:        FunctionType,
+	locals:      [LOCAL_MAX]Local,
+	local_count: int,
+	upvalues:    [LOCAL_MAX]Upvalue,
+	scope_depth: int,
 }
 
 compile :: proc(vm: ^VM, source: string) -> ^ObjectFunction {
-    parser: Parser
-    scanner_init(&parser.scanner, source)
-    parser.vm = vm
-    
-    compiler: Compiler
-    compiler_init(&parser, &compiler, .Script)
+	parser: Parser
+	scanner_init(&parser.scanner, source)
+	parser.vm = vm
 
-    advance(&parser)
-    
-    for !match(&parser, .Eof) {
-        declaration(&parser)
-    }
+	compiler: Compiler
+	compiler_init(&parser, &compiler, .Script)
+	vm.compiler = &compiler
 
-    function := end_compiler(&parser)
-    return parser.had_error ? nil : function
+	advance(&parser)
+
+	for !match(&parser, .Eof) {
+		declaration(&parser)
+	}
+
+	function := end_compiler(&parser)
+	vm.compiler = nil
+	return parser.had_error ? nil : function
 }
 
-@(private="file")
+@(private)
+mark_compiler_roots :: proc(vm: ^VM) {
+	compiler := vm.compiler
+	for compiler != nil {
+		mark_object(vm, compiler.function)
+		compiler = compiler.enclosing
+	}
+}
+
+@(private = "file")
 compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) {
-    compiler.enclosing = parser.compiler
-    parser.compiler = compiler
+	compiler.enclosing = parser.compiler
+	parser.compiler = compiler
 
-    compiler.type = type
-    compiler.local_count = 0
-    compiler.scope_depth = 0
-    compiler.function = new_function(parser.vm)
+	compiler.type = type
+	compiler.local_count = 0
+	compiler.scope_depth = 0
+	compiler.function = new_function(parser.vm)
 
-    if type != .Script {
-        parser.compiler.function.name = copy_string(parser.vm, parser.previous.lexeme)
-    }
+	if type != .Script {
+		parser.compiler.function.name = copy_string(parser.vm, parser.previous.lexeme)
+	}
 
-    local := &compiler.locals[compiler.local_count]
-    compiler.local_count += 1
-    local.depth = 0
-    local.is_captured = false
-    local.name.lexeme = ""
+	local := &compiler.locals[compiler.local_count]
+	compiler.local_count += 1
+	local.depth = 0
+	local.is_captured = false
+	local.name.lexeme = ""
 }
 
-@(private="file")
+@(private = "file")
 current_chunk :: #force_inline proc(parser: ^Parser) -> ^Chunk {
-    return &parser.compiler.function.chunk
+	return &parser.compiler.function.chunk
 }
 
-@(private="file")
+@(private = "file")
 advance :: proc(parser: ^Parser) {
-    parser.previous = parser.current
+	parser.previous = parser.current
 
-    for {
-        parser.current = scan_token(&parser.scanner)
-        if parser.current.type != .Error do break
-        error_at_current(parser, parser.current.lexeme)
-    }
+	for {
+		parser.current = scan_token(&parser.scanner)
+		if parser.current.type != .Error do break
+		error_at_current(parser, parser.current.lexeme)
+	}
 }
 
-@(private="file")
+@(private = "file")
 consume :: proc(parser: ^Parser, type: TokenType, message: string) {
-    if parser.current.type == type {
-        advance(parser)
-        return
-    }
+	if parser.current.type == type {
+		advance(parser)
+		return
+	}
 
-    error_at_current(parser, message)
+	error_at_current(parser, message)
 }
 
-@(private="file")
+@(private = "file")
 consume_terminator :: proc(parser: ^Parser, message: string) {
-    if match_terminator(parser) do return
-    error_at_current(parser, message)
+	if match_terminator(parser) do return
+	error_at_current(parser, message)
 }
 
-@(private="file")
+@(private = "file")
 consume_block :: proc(parser: ^Parser, message: string) {
-    consume(parser, .LeftBrace, message)
-    begin_scope(parser)
-    block(parser)
-    end_scope(parser)
+	consume(parser, .LeftBrace, message)
+	begin_scope(parser)
+	block(parser)
+	end_scope(parser)
 }
 
-@(private="file")
+@(private = "file")
 check :: #force_inline proc(parser: ^Parser, type: TokenType) -> bool {
-    return parser.current.type == type
+	return parser.current.type == type
 }
 
-@(private="file")
+@(private = "file")
 match :: proc(parser: ^Parser, type: TokenType) -> bool {
-    if !check(parser, type) do return false
-    advance(parser)
-    return true
+	if !check(parser, type) do return false
+	advance(parser)
+	return true
 }
 
-@(private="file")
+@(private = "file")
 match_terminator :: proc(parser: ^Parser) -> bool {
-    if match(parser, .Semicolon) do return true
-    if check(parser, .RightBrace) || check(parser, .Eof) do return true
-    if parser.current.line > parser.previous.line do return true
-    return false
+	if match(parser, .Semicolon) do return true
+	if check(parser, .RightBrace) || check(parser, .Eof) do return true
+	if parser.current.line > parser.previous.line do return true
+	return false
 }
 
-@(private="file")
-emit_byte :: proc(parser: ^Parser , byte: u8) {
-    chunk_write(current_chunk(parser), byte, parser.previous.line)
+@(private = "file")
+emit_byte :: proc(parser: ^Parser, byte: u8) {
+	chunk_write(current_chunk(parser), byte, parser.previous.line)
 }
 
-@(private="file")
+@(private = "file")
 emit_bytes :: proc(parser: ^Parser, byte1, byte2: u8) {
-    emit_byte(parser, byte1)
-    emit_byte(parser, byte2)
+	emit_byte(parser, byte1)
+	emit_byte(parser, byte2)
 }
 
-@(private="file")
+@(private = "file")
 emit_loop :: proc(parser: ^Parser, loop_start: int) {
-    offset := len(current_chunk(parser).instructions) - loop_start + 3
-    if offset > int(max(u16)) do error(parser, "Loop body too large.")
+	offset := len(current_chunk(parser).instructions) - loop_start + 3
+	if offset > int(max(u16)) do error(parser, "Loop body too large.")
 
-    emit_short(parser, .Loop, u16(offset))
+	emit_short(parser, .Loop, u16(offset))
 }
 
-@(private="file")
+@(private = "file")
 emit_jump :: proc(parser: ^Parser, op: Opcode) -> int {
-    emit_short(parser, op, 0xFFFF)
-    return len(current_chunk(parser).instructions) - 2
+	emit_short(parser, op, 0xFFFF)
+	return len(current_chunk(parser).instructions) - 2
 }
 
-@(private="file")
+@(private = "file")
 emit_short :: proc(parser: ^Parser, opcode: Opcode, operand: u16) {
-    emit_byte(parser, u8(opcode))
-    emit_bytes(parser, u8(operand & 0xFF), u8((operand >> 8) & 0xFF))
+	emit_byte(parser, u8(opcode))
+	emit_bytes(parser, u8(operand & 0xFF), u8((operand >> 8) & 0xFF))
 }
 
-@(private="file")
+@(private = "file")
 emit_return :: proc(parser: ^Parser) {
-    emit_byte(parser, u8(Opcode.Nil))
-    emit_byte(parser, u8(Opcode.Return))
+	emit_byte(parser, u8(Opcode.Nil))
+	emit_byte(parser, u8(Opcode.Return))
 }
 
-@(private="file")
+@(private = "file")
 make_constant :: proc(parser: ^Parser, value: Value) -> u16 {
-    constant := chunk_add_constant(current_chunk(parser), value)
+	constant := chunk_add_constant(parser.vm, current_chunk(parser), value)
 
-    if constant > int(max(u16)) {
-        error(parser, "Too many constants in one chunk.")
-        return 0
-    }
+	if constant > int(max(u16)) {
+		error(parser, "Too many constants in one chunk.")
+		return 0
+	}
 
-    return u16(constant)
+	return u16(constant)
 }
 
-@(private="file")
+@(private = "file")
 emit_constant :: proc(parser: ^Parser, value: Value) {
-    emit_short(parser, .Constant, make_constant(parser, value))
+	emit_short(parser, .Constant, make_constant(parser, value))
 }
 
-@(private="file")
+@(private = "file")
 patch_jump :: proc(parser: ^Parser, offset: int) {
-    jump := len(current_chunk(parser).instructions) -offset - 2
+	jump := len(current_chunk(parser).instructions) - offset - 2
 
-    if jump > int(max(u16)) {
-        error(parser, "Too much code to jump over.")
-    }
+	if jump > int(max(u16)) {
+		error(parser, "Too much code to jump over.")
+	}
 
-    current_chunk(parser).instructions[offset] = u8(jump & 0xFF)
-    current_chunk(parser).instructions[offset + 1] = u8((jump >> 8) & 0xFF)
+	current_chunk(parser).instructions[offset] = u8(jump & 0xFF)
+	current_chunk(parser).instructions[offset + 1] = u8((jump >> 8) & 0xFF)
 }
 
-@(private="file")
+@(private = "file")
 end_compiler :: proc(parser: ^Parser) -> ^ObjectFunction {
-    emit_return(parser)
-    function := parser.compiler.function
+	emit_return(parser)
+	function := parser.compiler.function
 
-    when DEW_DEBUG_PRINT_CODE {
-        if !parser.had_error {
-            disassemble_chunk(&function.chunk, function.name != nil ? function.name.chars : "<script>")
-        }
-    }
+	when DEW_DEBUG_PRINT_CODE {
+		if !parser.had_error {
+			disassemble_chunk(
+				&function.chunk,
+				function.name != nil ? function.name.chars : "<script>",
+			)
+		}
+	}
 
-    parser.compiler = parser.compiler.enclosing
-    return function
+	parser.compiler = parser.compiler.enclosing
+	return function
 }
 
-@(private="file")
+@(private = "file")
 begin_scope :: proc(parser: ^Parser) {
-    parser.compiler.scope_depth += 1
+	parser.compiler.scope_depth += 1
 }
 
-@(private="file")
+@(private = "file")
 end_scope :: proc(parser: ^Parser) {
-    current := parser.compiler
+	current := parser.compiler
 
-    current.scope_depth -= 1
+	current.scope_depth -= 1
 
-    for current.local_count > 0 && current.locals[current.local_count - 1].depth > current.scope_depth {
-        if current.locals[current.local_count - 1].is_captured {
-            emit_byte(parser, u8(Opcode.CloseUpvalue))
-        } else {
-            emit_byte(parser, u8(Opcode.Pop))
-        }
-        current.local_count -= 1
-    }
+	for current.local_count > 0 &&
+	    current.locals[current.local_count - 1].depth > current.scope_depth {
+		if current.locals[current.local_count - 1].is_captured {
+			emit_byte(parser, u8(Opcode.CloseUpvalue))
+		} else {
+			emit_byte(parser, u8(Opcode.Pop))
+		}
+		current.local_count -= 1
+	}
 }
 
-@(private="file")
+@(private = "file")
 binary :: proc(parser: ^Parser, can_assign: bool) {
-    operator_type := parser.previous.type
-    rule := &rules[operator_type]
-    parse_precedence(parser, Precedence(int(rule.precedence) + 1))
+	operator_type := parser.previous.type
+	rule := &rules[operator_type]
+	parse_precedence(parser, Precedence(int(rule.precedence) + 1))
 
-    #partial switch operator_type {
-        case .BangEqual:    emit_bytes(parser, u8(Opcode.Equal), u8(Opcode.Not))
-        case .EqualEqual:   emit_byte(parser, u8(Opcode.Equal))
-        case .Greater:      emit_byte(parser, u8(Opcode.Greater))
-        case .GreaterEqual: emit_bytes(parser, u8(Opcode.Less), u8(Opcode.Not))
-        case .Less:         emit_byte(parser, u8(Opcode.Less))
-        case .LessEqual:    emit_bytes(parser, u8(Opcode.Greater), u8(Opcode.Not))
-        case .Plus:         emit_byte(parser, u8(Opcode.Add))
-        case .Minus:        emit_byte(parser, u8(Opcode.Sub))
-        case .Star:         emit_byte(parser, u8(Opcode.Mul))
-        case .Slash:        emit_byte(parser, u8(Opcode.Div))
-    }
+	#partial switch operator_type {
+	case .BangEqual:
+		emit_bytes(parser, u8(Opcode.Equal), u8(Opcode.Not))
+	case .EqualEqual:
+		emit_byte(parser, u8(Opcode.Equal))
+	case .Greater:
+		emit_byte(parser, u8(Opcode.Greater))
+	case .GreaterEqual:
+		emit_bytes(parser, u8(Opcode.Less), u8(Opcode.Not))
+	case .Less:
+		emit_byte(parser, u8(Opcode.Less))
+	case .LessEqual:
+		emit_bytes(parser, u8(Opcode.Greater), u8(Opcode.Not))
+	case .Plus:
+		emit_byte(parser, u8(Opcode.Add))
+	case .Minus:
+		emit_byte(parser, u8(Opcode.Sub))
+	case .Star:
+		emit_byte(parser, u8(Opcode.Mul))
+	case .Slash:
+		emit_byte(parser, u8(Opcode.Div))
+	}
 }
 
-@(private="file")
+@(private = "file")
 call :: proc(parser: ^Parser, can_assign: bool) {
-    arg_count := argument_list(parser)
-    emit_bytes(parser, u8(Opcode.Call), arg_count)
+	arg_count := argument_list(parser)
+	emit_bytes(parser, u8(Opcode.Call), arg_count)
 }
 
-@(private="file")
+@(private = "file")
 parse_literal :: proc(parser: ^Parser, can_assign: bool) {
-    #partial switch parser.previous.type {
-        case .False: emit_byte(parser, u8(Opcode.False))
-        case .Nil:   emit_byte(parser, u8(Opcode.Nil))
-        case .True:  emit_byte(parser, u8(Opcode.True))
-    }
+	#partial switch parser.previous.type {
+	case .False:
+		emit_byte(parser, u8(Opcode.False))
+	case .Nil:
+		emit_byte(parser, u8(Opcode.Nil))
+	case .True:
+		emit_byte(parser, u8(Opcode.True))
+	}
 }
 
-@(private="file")
+@(private = "file")
 grouping :: proc(parser: ^Parser, can_assign: bool) {
-    expression(parser)
-    consume(parser, .RightParen, "Expect ')' after expression.")
+	expression(parser)
+	consume(parser, .RightParen, "Expect ')' after expression.")
 }
 
-@(private="file")
+@(private = "file")
 parse_number :: proc(parser: ^Parser, can_assign: bool) {
-    value, _ := strconv.parse_f64(parser.previous.lexeme)
-    emit_constant(parser, Value(value))
+	value, _ := strconv.parse_f64(parser.previous.lexeme)
+	emit_constant(parser, Value(value))
 }
 
-@(private="file")
+@(private = "file")
 or :: proc(parser: ^Parser, can_assign: bool) {
-    else_jump := emit_jump(parser, .JumpIfFalse)
-    end_jump := emit_jump(parser, .Jump)
+	else_jump := emit_jump(parser, .JumpIfFalse)
+	end_jump := emit_jump(parser, .Jump)
 
-    patch_jump(parser, else_jump)
-    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	patch_jump(parser, else_jump)
+	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 
-    parse_precedence(parser, .Or)
-    patch_jump(parser, end_jump)
+	parse_precedence(parser, .Or)
+	patch_jump(parser, end_jump)
 }
 
-@(private="file")
+@(private = "file")
 parse_string :: proc(parser: ^Parser, can_assign: bool) {
-    value := copy_string(parser.vm, parser.previous.lexeme[1 : len(parser.previous.lexeme) - 1])
-    emit_constant(parser, Value(cast(^Object)value))
+	value := copy_string(parser.vm, parser.previous.lexeme[1:len(parser.previous.lexeme) - 1])
+	emit_constant(parser, Value(cast(^Object)value))
 }
 
 named_variable :: proc(parser: ^Parser, name: ^Token, can_assign: bool) {
-    get_op, set_op: Opcode
-    arg := resolve_local(parser, parser.compiler, name)
-    if arg != -1 {
-        get_op, set_op = .GetLocal, .SetLocal
-    } else if arg = resolve_upvalue(parser, parser.compiler, name); arg != -1 {
-        get_op, set_op = .GetUpvalue, .SetUpvalue
-    } else {
-        arg = int(identifier_constant(parser, name))
-        get_op, set_op = .GetGlobal, .SetGlobal
-    }
+	get_op, set_op: Opcode
+	arg := resolve_local(parser, parser.compiler, name)
+	if arg != -1 {
+		get_op, set_op = .GetLocal, .SetLocal
+	} else if arg = resolve_upvalue(parser, parser.compiler, name); arg != -1 {
+		get_op, set_op = .GetUpvalue, .SetUpvalue
+	} else {
+		arg = int(identifier_constant(parser, name))
+		get_op, set_op = .GetGlobal, .SetGlobal
+	}
 
-    if can_assign && match(parser, .Equal) {
-        expression(parser)
-        if set_op == .SetGlobal {
-            emit_short(parser, set_op, u16(arg))
-        } else {
-            emit_bytes(parser, u8(set_op), u8(arg))
-        }
-    } else {
-        if get_op == .GetGlobal {
-            emit_short(parser, get_op, u16(arg))
-        } else {
-            emit_bytes(parser, u8(get_op), u8(arg))
-        }
-    }
+	if can_assign && match(parser, .Equal) {
+		expression(parser)
+		if set_op == .SetGlobal {
+			emit_short(parser, set_op, u16(arg))
+		} else {
+			emit_bytes(parser, u8(set_op), u8(arg))
+		}
+	} else {
+		if get_op == .GetGlobal {
+			emit_short(parser, get_op, u16(arg))
+		} else {
+			emit_bytes(parser, u8(get_op), u8(arg))
+		}
+	}
 }
 
-@(private="file")
+@(private = "file")
 variable :: proc(parser: ^Parser, can_assign: bool) {
-    named_variable(parser, &parser.previous, can_assign)
+	named_variable(parser, &parser.previous, can_assign)
 }
 
-@(private="file")
+@(private = "file")
 unary :: proc(parser: ^Parser, can_assign: bool) {
-    operator_type := parser.previous.type
+	operator_type := parser.previous.type
 
-    parse_precedence(parser, .Unary)
+	parse_precedence(parser, .Unary)
 
-    #partial switch operator_type {
-        case .Bang:  emit_byte(parser, u8(Opcode.Not))
-        case .Minus: emit_byte(parser, u8(Opcode.Negate))
-    }
+	#partial switch operator_type {
+	case .Bang:
+		emit_byte(parser, u8(Opcode.Not))
+	case .Minus:
+		emit_byte(parser, u8(Opcode.Negate))
+	}
 }
 
-@(private="file", rodata)
-rules := #partial [TokenType]ParseRule{
-    .LeftParen    = {grouping, call, .Call},
-    .Minus        = {unary, binary, .Term},
-    .Plus         = {nil, binary, .Term},
-    .Slash        = {nil, binary, .Factor},
-    .Star         = {nil, binary, .Factor},
-    .Bang         = {unary, nil, .None},
-    .BangEqual    = {nil, binary, .Equality},
-    .EqualEqual   = {nil, binary, .Equality},
-    .Greater      = {nil, binary, .Comparison},
-    .GreaterEqual = {nil, binary, .Comparison},
-    .Less         = {nil, binary, .Comparison},
-    .LessEqual    = {nil, binary, .Comparison},
-    .Identifier   = {variable, nil, .None},
-    .String       = {parse_string, nil, .None},
-    .Number       = {parse_number, nil, .None},
-    .And          = {nil, and, .And},
-    .False        = {parse_literal, nil, .None},
-    .Nil          = {parse_literal, nil, .None},
-    .Or           = {nil, or, .Or},
-    .True         = {parse_literal, nil, .None},
+@(private = "file", rodata)
+rules := #partial [TokenType]ParseRule {
+	.LeftParen    = {grouping, call, .Call},
+	.Minus        = {unary, binary, .Term},
+	.Plus         = {nil, binary, .Term},
+	.Slash        = {nil, binary, .Factor},
+	.Star         = {nil, binary, .Factor},
+	.Bang         = {unary, nil, .None},
+	.BangEqual    = {nil, binary, .Equality},
+	.EqualEqual   = {nil, binary, .Equality},
+	.Greater      = {nil, binary, .Comparison},
+	.GreaterEqual = {nil, binary, .Comparison},
+	.Less         = {nil, binary, .Comparison},
+	.LessEqual    = {nil, binary, .Comparison},
+	.Identifier   = {variable, nil, .None},
+	.String       = {parse_string, nil, .None},
+	.Number       = {parse_number, nil, .None},
+	.And          = {nil, and, .And},
+	.False        = {parse_literal, nil, .None},
+	.Nil          = {parse_literal, nil, .None},
+	.Or           = {nil, or, .Or},
+	.True         = {parse_literal, nil, .None},
 }
 
-@(private="file")
+@(private = "file")
 parse_precedence :: proc(parser: ^Parser, precedence: Precedence) {
-    advance(parser)
+	advance(parser)
 
-    prefix_rule := rules[parser.previous.type].prefix
-    if prefix_rule == nil {
-        error(parser, "Expect expression.")
-        return
-    }
+	prefix_rule := rules[parser.previous.type].prefix
+	if prefix_rule == nil {
+		error(parser, "Expect expression.")
+		return
+	}
 
-    can_assign := precedence <= .Assignment
-    prefix_rule(parser, can_assign)
+	can_assign := precedence <= .Assignment
+	prefix_rule(parser, can_assign)
 
-    for precedence <= rules[parser.current.type].precedence {
-        if parser.current.line > parser.previous.line do break
-        advance(parser)
-        infix_rule := rules[parser.previous.type].infix
-        infix_rule(parser, can_assign)
-    }
+	for precedence <= rules[parser.current.type].precedence {
+		if parser.current.line > parser.previous.line do break
+		advance(parser)
+		infix_rule := rules[parser.previous.type].infix
+		infix_rule(parser, can_assign)
+	}
 
-    if can_assign && match(parser, .Equal) {
-        error(parser, "Invalid assignment target.")
-    }
+	if can_assign && match(parser, .Equal) {
+		error(parser, "Invalid assignment target.")
+	}
 }
 
-@(private="file")
+@(private = "file")
 identifier_constant :: proc(parser: ^Parser, name: ^Token) -> u16 {
-    return make_constant(parser, val_obj(copy_string(parser.vm, name.lexeme)))
+	return make_constant(parser, val_obj(copy_string(parser.vm, name.lexeme)))
 }
 
-@(private="file")
+@(private = "file")
 resolve_local :: proc(parser: ^Parser, compiler: ^Compiler, name: ^Token) -> int {
-    for i := compiler.local_count -1; i >= 0; i -= 1 {
-        local := &compiler.locals[i]
-        if name.lexeme == local.name.lexeme {
-            if local.depth == -1 {
-                error(parser, "Can't read local variable in its own initializer.")
-            }
-            return i
-        }
-    }
+	for i := compiler.local_count - 1; i >= 0; i -= 1 {
+		local := &compiler.locals[i]
+		if name.lexeme == local.name.lexeme {
+			if local.depth == -1 {
+				error(parser, "Can't read local variable in its own initializer.")
+			}
+			return i
+		}
+	}
 
-    return -1
+	return -1
 }
 
-@(private="file")
+@(private = "file")
 add_upvalue :: proc(parser: ^Parser, compiler: ^Compiler, index: u8, is_local: bool) -> int {
-    upvalue_count := compiler.function.upvalue_count
+	upvalue_count := compiler.function.upvalue_count
 
-    for i in 0..<upvalue_count {
-        upvalue := &compiler.upvalues[i]
-        if upvalue.index == index && upvalue.is_local == is_local {
-            return i
-        }
-    }
+	for i in 0 ..< upvalue_count {
+		upvalue := &compiler.upvalues[i]
+		if upvalue.index == index && upvalue.is_local == is_local {
+			return i
+		}
+	}
 
-    if upvalue_count == LOCAL_MAX {
-        error(parser, "Too many closure variables in function.")
-        return 0
-    }
+	if upvalue_count == LOCAL_MAX {
+		error(parser, "Too many closure variables in function.")
+		return 0
+	}
 
-    compiler.upvalues[upvalue_count].is_local = is_local
-    compiler.upvalues[upvalue_count].index = index
-    compiler.function.upvalue_count += 1
-    return upvalue_count
+	compiler.upvalues[upvalue_count].is_local = is_local
+	compiler.upvalues[upvalue_count].index = index
+	compiler.function.upvalue_count += 1
+	return upvalue_count
 }
 
-@(private="file")
+@(private = "file")
 resolve_upvalue :: proc(parser: ^Parser, compiler: ^Compiler, name: ^Token) -> int {
-    if compiler.enclosing == nil do return -1
+	if compiler.enclosing == nil do return -1
 
-    local := resolve_local(parser, compiler.enclosing, name)
-    if local != -1 {
-        compiler.enclosing.locals[local].is_captured = true
-        return add_upvalue(parser, compiler, u8(local), true)
-    }
+	local := resolve_local(parser, compiler.enclosing, name)
+	if local != -1 {
+		compiler.enclosing.locals[local].is_captured = true
+		return add_upvalue(parser, compiler, u8(local), true)
+	}
 
-    upvalue := resolve_upvalue(parser, compiler.enclosing, name)
-    if upvalue != -1 {
-        return add_upvalue(parser, compiler, u8(upvalue), false)
-    }
+	upvalue := resolve_upvalue(parser, compiler.enclosing, name)
+	if upvalue != -1 {
+		return add_upvalue(parser, compiler, u8(upvalue), false)
+	}
 
-    return -1
+	return -1
 }
 
-@(private="file")
+@(private = "file")
 declare_variable :: proc(parser: ^Parser) {
-    if parser.compiler.scope_depth == 0 do return
+	if parser.compiler.scope_depth == 0 do return
 
-    name := parser.previous
+	name := parser.previous
 
-    for i := parser.compiler.local_count - 1; i >= 0; i -= 1 {
-        local := parser.compiler.locals[i]
-        if local.depth != -1 && local.depth < parser.compiler.scope_depth {
-            break
-        }
+	for i := parser.compiler.local_count - 1; i >= 0; i -= 1 {
+		local := parser.compiler.locals[i]
+		if local.depth != -1 && local.depth < parser.compiler.scope_depth {
+			break
+		}
 
-        if name.lexeme == local.name.lexeme {
-            error(parser, "Already a variable with this name in this scope.")
-        }
-    }
+		if name.lexeme == local.name.lexeme {
+			error(parser, "Already a variable with this name in this scope.")
+		}
+	}
 
-    add_local(parser, name)
+	add_local(parser, name)
 }
 
-@(private="file")
+@(private = "file")
 add_local :: proc(parser: ^Parser, name: Token) {
-    if parser.compiler.local_count == int(max(u8)) {
-        error(parser, "Too many local variables in Chunk.")
-        return
-    }
+	if parser.compiler.local_count == int(max(u8)) {
+		error(parser, "Too many local variables in Chunk.")
+		return
+	}
 
-    local := &parser.compiler.locals[parser.compiler.local_count]
-    parser.compiler.local_count += 1
-    local.name = name
-    local.depth = -1
-    local.is_captured = false 
+	local := &parser.compiler.locals[parser.compiler.local_count]
+	parser.compiler.local_count += 1
+	local.name = name
+	local.depth = -1
+	local.is_captured = false
 }
 
-@(private="file")
+@(private = "file")
 parse_variable :: proc(parser: ^Parser, error_mesage: string) -> u16 {
-    consume(parser, .Identifier, error_mesage)
+	consume(parser, .Identifier, error_mesage)
 
-    declare_variable(parser)
-    if parser.compiler.scope_depth > 0 do return 0
+	declare_variable(parser)
+	if parser.compiler.scope_depth > 0 do return 0
 
-    return identifier_constant(parser, &parser.previous)
+	return identifier_constant(parser, &parser.previous)
 }
 
-@(private="file")
+@(private = "file")
 mark_initialized :: proc(parser: ^Parser) {
-    if parser.compiler.scope_depth == 0 do return
-    parser.compiler.locals[parser.compiler.local_count - 1].depth = parser.compiler.scope_depth
+	if parser.compiler.scope_depth == 0 do return
+	parser.compiler.locals[parser.compiler.local_count - 1].depth = parser.compiler.scope_depth
 }
 
-@(private="file")
+@(private = "file")
 define_variable :: proc(parser: ^Parser, global: u16) {
-    if parser.compiler.scope_depth > 0 {
-        mark_initialized(parser)
-        return
-    }
+	if parser.compiler.scope_depth > 0 {
+		mark_initialized(parser)
+		return
+	}
 
-    emit_short(parser, .DefineGlobal, global)
+	emit_short(parser, .DefineGlobal, global)
 }
 
-@(private="file")
+@(private = "file")
 argument_list :: proc(parser: ^Parser) -> u8 {
-    arg_count: u8
-    if !check(parser, .RightParen) {
-        for {
-            expression(parser)
-            if arg_count == 255 {
-                error(parser, "Can't have more than 255 arguments.")
-            }
-            arg_count += 1
-            if !match(parser, .Comma) do break
-        }
-    }
-    consume(parser, .RightParen, "Expect ')' after arguments.")
-    return arg_count
+	arg_count: u8
+	if !check(parser, .RightParen) {
+		for {
+			expression(parser)
+			if arg_count == 255 {
+				error(parser, "Can't have more than 255 arguments.")
+			}
+			arg_count += 1
+			if !match(parser, .Comma) do break
+		}
+	}
+	consume(parser, .RightParen, "Expect ')' after arguments.")
+	return arg_count
 }
 
-@(private="file")
+@(private = "file")
 and :: proc(parser: ^Parser, can_assign: bool) {
-    end_jump := emit_jump(parser, .JumpIfFalse)
-    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
-    parse_precedence(parser, .And)
+	end_jump := emit_jump(parser, .JumpIfFalse)
+	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	parse_precedence(parser, .And)
 
-    patch_jump(parser, end_jump)
+	patch_jump(parser, end_jump)
 }
 
-@(private="file")
+@(private = "file")
 expression :: proc(parser: ^Parser) {
-    parse_precedence(parser, .Assignment)
+	parse_precedence(parser, .Assignment)
 }
 
-@(private="file")
+@(private = "file")
 block :: proc(parser: ^Parser) {
-    for !check(parser, .RightBrace) && !check(parser, .Eof) {
-        declaration(parser)
-    }
+	for !check(parser, .RightBrace) && !check(parser, .Eof) {
+		declaration(parser)
+	}
 
-    consume(parser, .RightBrace, "Expect '}' after block.")
+	consume(parser, .RightBrace, "Expect '}' after block.")
 }
 
-@(private="file")
+@(private = "file")
 function :: proc(parser: ^Parser, type: FunctionType) {
-    compiler: Compiler
-    compiler_init(parser, &compiler, type)
-    begin_scope(parser)
+	compiler: Compiler
+	compiler_init(parser, &compiler, type)
+	begin_scope(parser)
 
-    consume(parser, .LeftParen, "Expect '(' after function name.")
-    if !check(parser, .RightParen) {
-        for {
-            parser.compiler.function.arity += 1
-            if parser.compiler.function.arity > 255 {
-                error_at_current(parser, "Can't have more than 255 parameters.")
-            }
-            constant := parse_variable(parser, "Expect parameter name.")
-            define_variable(parser, constant)
-            
-            if !match(parser, .Comma) do break
-        }
-    }
-    consume(parser, .RightParen, "Expect ')' after parameters.")
-    consume(parser, .LeftBrace, "Expect '{' before function body.")
-    block(parser)
+	consume(parser, .LeftParen, "Expect '(' after function name.")
+	if !check(parser, .RightParen) {
+		for {
+			parser.compiler.function.arity += 1
+			if parser.compiler.function.arity > 255 {
+				error_at_current(parser, "Can't have more than 255 parameters.")
+			}
+			constant := parse_variable(parser, "Expect parameter name.")
+			define_variable(parser, constant)
 
-    function := end_compiler(parser)
-    emit_short(parser, .Closure, make_constant(parser, val_obj(function)))
+			if !match(parser, .Comma) do break
+		}
+	}
+	consume(parser, .RightParen, "Expect ')' after parameters.")
+	consume(parser, .LeftBrace, "Expect '{' before function body.")
+	block(parser)
 
-    for i in 0..<function.upvalue_count {
-        emit_byte(parser, compiler.upvalues[i].is_local ? 1 : 0)
-        emit_byte(parser, compiler.upvalues[i].index)
-    }
+	function := end_compiler(parser)
+	emit_short(parser, .Closure, make_constant(parser, val_obj(function)))
+
+	for i in 0 ..< function.upvalue_count {
+		emit_byte(parser, compiler.upvalues[i].is_local ? 1 : 0)
+		emit_byte(parser, compiler.upvalues[i].index)
+	}
 }
 
-@(private="file")
+@(private = "file")
 fn_declaration :: proc(parser: ^Parser) {
-    global := parse_variable(parser, "Expect function name.")
-    mark_initialized(parser)
-    function(parser, .Function)
-    define_variable(parser, global)
+	global := parse_variable(parser, "Expect function name.")
+	mark_initialized(parser)
+	function(parser, .Function)
+	define_variable(parser, global)
 }
 
-@(private="file")
+@(private = "file")
 var_declaration :: proc(parser: ^Parser) {
-    global := parse_variable(parser, "Expect variable name.")
+	global := parse_variable(parser, "Expect variable name.")
 
-    if match(parser, .Equal) {
-        expression(parser)
-    } else {
-        emit_byte(parser, u8(Opcode.Nil))
-    }
-    consume_terminator(parser, "Expect ';' after variable declaration.")
+	if match(parser, .Equal) {
+		expression(parser)
+	} else {
+		emit_byte(parser, u8(Opcode.Nil))
+	}
+	consume_terminator(parser, "Expect ';' after variable declaration.")
 
-    define_variable(parser, global)
+	define_variable(parser, global)
 }
 
-@(private="file")
+@(private = "file")
 expression_statement :: proc(parser: ^Parser) {
-    expression(parser)
-    consume_terminator(parser, "Expect ';' after expression.")
-    emit_byte(parser, u8(Opcode.Pop))
+	expression(parser)
+	consume_terminator(parser, "Expect ';' after expression.")
+	emit_byte(parser, u8(Opcode.Pop))
 }
 
-@(private="file")
+@(private = "file")
 for_statement :: proc(parser: ^Parser) {
-    begin_scope(parser)
-    
-    if match(parser, .Semicolon) {
+	begin_scope(parser)
 
-    } else if match(parser, .Var) {
-        var_declaration(parser)
-    } else {
-        expression_statement(parser)
-    }
+	if match(parser, .Semicolon) {
 
-    loop_start := len(current_chunk(parser).instructions)
-    exit_jump := -1
-    if !match(parser, .Semicolon) {
-        expression(parser)
-        consume(parser, .Semicolon, "Expect ';' after loop condition.")
+	} else if match(parser, .Var) {
+		var_declaration(parser)
+	} else {
+		expression_statement(parser)
+	}
 
-        exit_jump = emit_jump(parser, .JumpIfFalse)
-        emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
-    }
+	loop_start := len(current_chunk(parser).instructions)
+	exit_jump := -1
+	if !match(parser, .Semicolon) {
+		expression(parser)
+		consume(parser, .Semicolon, "Expect ';' after loop condition.")
 
-    if !check(parser, .LeftBrace) {
-        body_jump := emit_jump(parser, .Jump)
-        increment_start := len(current_chunk(parser).instructions)
-        expression(parser)
-        emit_byte(parser, u8(Opcode.Pop))
+		exit_jump = emit_jump(parser, .JumpIfFalse)
+		emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	}
 
-        emit_loop(parser, loop_start)
-        loop_start = increment_start
-        patch_jump(parser, body_jump)
-    }
+	if !check(parser, .LeftBrace) {
+		body_jump := emit_jump(parser, .Jump)
+		increment_start := len(current_chunk(parser).instructions)
+		expression(parser)
+		emit_byte(parser, u8(Opcode.Pop))
 
-    consume_block(parser, "Expect '{' before 'for' body.")
-    emit_loop(parser, loop_start)
+		emit_loop(parser, loop_start)
+		loop_start = increment_start
+		patch_jump(parser, body_jump)
+	}
 
-    if exit_jump != -1 {
-        patch_jump(parser, exit_jump)
-        emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
-    }
+	consume_block(parser, "Expect '{' before 'for' body.")
+	emit_loop(parser, loop_start)
 
-    end_scope(parser)
+	if exit_jump != -1 {
+		patch_jump(parser, exit_jump)
+		emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	}
+
+	end_scope(parser)
 }
 
-@(private="file")
+@(private = "file")
 if_statement :: proc(parser: ^Parser) {
-    expression(parser)
+	expression(parser)
 
-    then_jump := emit_jump(parser, .JumpIfFalse)
-    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
-    
-    consume_block(parser, "Expect '{' before 'if' body.")
+	then_jump := emit_jump(parser, .JumpIfFalse)
+	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 
-    else_jump := emit_jump(parser, .Jump)
+	consume_block(parser, "Expect '{' before 'if' body.")
 
-    patch_jump(parser, then_jump)
-    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	else_jump := emit_jump(parser, .Jump)
 
-    if match(parser, .Else) {
-        if match(parser, .If) {
-            if_statement(parser)
-        } else {
-            consume_block(parser, "Expect '{' before 'else' body.")
-        }
-    }
+	patch_jump(parser, then_jump)
+	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 
-    patch_jump(parser, else_jump)
+	if match(parser, .Else) {
+		if match(parser, .If) {
+			if_statement(parser)
+		} else {
+			consume_block(parser, "Expect '{' before 'else' body.")
+		}
+	}
+
+	patch_jump(parser, else_jump)
 }
 
-@(private="file")
+@(private = "file")
 print_statement :: proc(parser: ^Parser) {
-    expression(parser)
-    consume_terminator(parser, "Expect ';' after value.")
-    emit_byte(parser, u8(Opcode.Print))
+	expression(parser)
+	consume_terminator(parser, "Expect ';' after value.")
+	emit_byte(parser, u8(Opcode.Print))
 }
 
-@(private="file")
+@(private = "file")
 return_statement :: proc(parser: ^Parser) {
-    if parser.compiler.type == .Script {
-        error(parser, "Can't return from top-level code.")
-    }
+	if parser.compiler.type == .Script {
+		error(parser, "Can't return from top-level code.")
+	}
 
-    if match_terminator(parser) {
-        emit_return(parser)
-    } else {
-        expression(parser)
-        consume_terminator(parser, "Expect ';' after return value.")
-        emit_byte(parser, u8(Opcode.Return))
-    }
+	if match_terminator(parser) {
+		emit_return(parser)
+	} else {
+		expression(parser)
+		consume_terminator(parser, "Expect ';' after return value.")
+		emit_byte(parser, u8(Opcode.Return))
+	}
 }
 
-@(private="file")
+@(private = "file")
 while_statement :: proc(parser: ^Parser) {
-    loop_start := len(current_chunk(parser).instructions)
+	loop_start := len(current_chunk(parser).instructions)
 
-    expression(parser)
+	expression(parser)
 
-    exit_jump := emit_jump(parser, .JumpIfFalse)
-    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	exit_jump := emit_jump(parser, .JumpIfFalse)
+	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 
-    consume_block(parser, "Expect '{' before 'while' body.")
+	consume_block(parser, "Expect '{' before 'while' body.")
 
-    emit_loop(parser, loop_start)
+	emit_loop(parser, loop_start)
 
-    patch_jump(parser, exit_jump)
-    emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+	patch_jump(parser, exit_jump)
+	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 }
 
-@(private="file")
+@(private = "file")
 synchronize :: proc(parser: ^Parser) {
-    parser.panic_mode = false
+	parser.panic_mode = false
 
-    for parser.current.type != .Eof {
-        if parser.previous.type == .Semicolon do return
+	for parser.current.type != .Eof {
+		if parser.previous.type == .Semicolon do return
 
-        #partial switch parser.current.type {
-            case .Class, .Fn, .Var, .For, .If, .While, .Print, .Return:  return
-        }
+		#partial switch parser.current.type {
+		case .Class, .Fn, .Var, .For, .If, .While, .Print, .Return:
+			return
+		}
 
-        advance(parser)
-    }
+		advance(parser)
+	}
 }
 
-@(private="file")
+@(private = "file")
 declaration :: proc(parser: ^Parser) {
-    if match(parser, .Fn) {
-        fn_declaration(parser)
-    } else if match(parser, .Var) {
-        var_declaration(parser)
-    } else {
-        statement(parser)
-    }
+	if match(parser, .Fn) {
+		fn_declaration(parser)
+	} else if match(parser, .Var) {
+		var_declaration(parser)
+	} else {
+		statement(parser)
+	}
 
-    if parser.panic_mode do synchronize(parser)
+	if parser.panic_mode do synchronize(parser)
 }
 
-@(private="file")
+@(private = "file")
 statement :: proc(parser: ^Parser) {
-    if match(parser, .Print) {
-        print_statement(parser)
-    } else if match(parser, .For) {
-        for_statement(parser)
-    } else if match(parser, .If) {
-        if_statement(parser)
-    } else if match(parser, .Return) {
-        return_statement(parser)
-    } else if match(parser, .While) {
-        while_statement(parser)
-    } else if match(parser, .LeftBrace) {
-        begin_scope(parser)
-        block(parser)
-        end_scope(parser)
-    } else {
-        expression_statement(parser)
-    }
+	if match(parser, .Print) {
+		print_statement(parser)
+	} else if match(parser, .For) {
+		for_statement(parser)
+	} else if match(parser, .If) {
+		if_statement(parser)
+	} else if match(parser, .Return) {
+		return_statement(parser)
+	} else if match(parser, .While) {
+		while_statement(parser)
+	} else if match(parser, .LeftBrace) {
+		begin_scope(parser)
+		block(parser)
+		end_scope(parser)
+	} else {
+		expression_statement(parser)
+	}
 }
 
-@(private="file")
+@(private = "file")
 error_at :: proc(parser: ^Parser, token: ^Token, message: string) {
-    if parser.panic_mode do return
-    parser.panic_mode = true
+	if parser.panic_mode do return
+	parser.panic_mode = true
 
-    fmt.eprintf("[line %d] Error", token.line)
+	fmt.eprintf("[line %d] Error", token.line)
 
-    if token.type == .Eof do fmt.eprintf(" at end")
-    else if token.type != .Error {
-        fmt.eprintf(" at '%s'", token.lexeme)
-    }
+	if token.type == .Eof do fmt.eprintf(" at end")
+	else if token.type != .Error {
+		fmt.eprintf(" at '%s'", token.lexeme)
+	}
 
-    fmt.eprintfln(": %s", message)
-    parser.had_error = true
+	fmt.eprintfln(": %s", message)
+	parser.had_error = true
 }
 
-@(private="file")
+@(private = "file")
 error :: proc(parser: ^Parser, message: string) {
-    error_at(parser, &parser.previous, message)
+	error_at(parser, &parser.previous, message)
 }
 
-@(private="file")
+@(private = "file")
 error_at_current :: proc(parser: ^Parser, message: string) {
-    error_at(parser, &parser.current, message)
+	error_at(parser, &parser.current, message)
 }

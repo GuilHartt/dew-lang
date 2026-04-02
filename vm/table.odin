@@ -136,3 +136,22 @@ table_find_string :: proc(table: ^Table, chars: string, hash: u32) -> ^ObjectStr
         index = (index + 1) % u32(len(table.entries))
     }
 }
+
+@(private)
+table_remove_white :: proc(table: ^Table) {
+    for i in 0..<len(table.entries) {
+        entry := &table.entries[i]
+        if entry.key != nil && !entry.key.is_marked {
+            table_delete(table, entry.key)
+        }
+    }
+}
+
+@(private)
+mark_table :: proc(vm: ^VM, table: ^Table) {
+    for i in 0..<len(table.entries) {
+        entry := &table.entries[i]
+        mark_object(vm, entry.key)
+        mark_value(vm, entry.value)
+    }
+}
