@@ -80,9 +80,7 @@ adjust_capacity :: proc(table: ^Table, capacity: int) {
     table.entries = entries
 }
 
-table_set :: proc "contextless" (table: ^Table, key: ^ObjectString, value: Value) -> bool {
-    context = runtime.default_context()
-
+table_set :: proc(table: ^Table, key: ^ObjectString, value: Value) -> bool {
     if cap := len(table.entries); f64(table.count + 1) > f64(cap) * TABLE_MAX_LOAD {
         capacity := cap < 8 ? 8 : cap * 2
         adjust_capacity(table, capacity)

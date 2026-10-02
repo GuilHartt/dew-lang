@@ -55,17 +55,11 @@ ObjectClosure :: struct {
 
 @(private = "file")
 allocate_object :: proc(vm: ^VM, $T: typeid, type: ObjectType) -> ^T {
-	vm.bytes_allocated += size_of(T)
+	context.allocator = vm.alloc
 
-	when DEW_DEBUG_STRESS_GC {
-		collect_garbage(vm)
-	} else {
-		if vm.bytes_allocated > vm.next_gc {
-			collect_garbage(vm)
-		}
-	}
+	obj, err := new(T)
+	assert(err == .None)
 
-	obj := new(T)
 	obj.type = type
 	obj.next = vm.objects
 	vm.objects = obj
@@ -92,6 +86,7 @@ allocate_string :: proc(vm: ^VM, chars: string, hash: u32) -> ^ObjectString {
 
 @(private)
 copy_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
+	context.allocator = vm.alloc
 	hash := hash.fnv32a(transmute([]u8)chars)
 	interned := table_find_string(&vm.strings, chars, hash)
 	if interned != nil do return interned
@@ -100,10 +95,11 @@ copy_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
 
 @(private)
 take_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
+	context.allocator = vm.alloc
 	hash := hash.fnv32a(transmute([]u8)chars)
 	interned := table_find_string(&vm.strings, chars, hash)
 	if interned != nil {
-		delete(chars)
+		delete(chars, vm.alloc)
 		return interned
 	}
 	return allocate_string(vm, chars, hash)
@@ -154,7 +150,7 @@ new_upvalue :: proc(vm: ^VM, slot: ^Value) -> ^ObjectUpvalue {
 }
 
 new_closure :: proc(vm: ^VM, function: ^ObjectFunction) -> ^ObjectClosure {
-	upvalues := make([]^ObjectUpvalue, function.upvalue_count)
+	upvalues := make([]^ObjectUpvalue, function.upvalue_count, vm.alloc)
 	closure := allocate_object(vm, ObjectClosure, .Closure)
 	closure.function = function
 	closure.upvalues = upvalues

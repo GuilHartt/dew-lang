@@ -28,6 +28,8 @@ VM :: struct {
 	globals:         Table,
 	strings:         Table,
 	open_upvalues:   ^ObjectUpvalue,
+	alloc:           runtime.Allocator,
+	gc_state:        GcState,
 	bytes_allocated: int,
 	next_gc:         int,
 	objects:         ^Object,
@@ -36,10 +38,17 @@ VM :: struct {
 }
 
 init :: proc(vm: ^VM) {
+	vm.alloc = {nil, nil}
+	vm.gc_state = {runtime.heap_allocator(), vm, false}
+	vm.alloc = {gc_allocator_proc, &vm.gc_state}
+	context.allocator = vm.alloc
+
 	vm_reset_stack(vm)
 	vm.objects = nil
 	vm.bytes_allocated = 0
 	vm.next_gc = 1024 * 1024
+
+	vm.gray_stack.allocator = vm.gc_state.backing
 
 	init_table(&vm.globals)
 	init_table(&vm.strings)
@@ -51,9 +60,11 @@ init :: proc(vm: ^VM) {
 }
 
 destroy :: proc(vm: ^VM) {
+	context.allocator = vm.alloc
 	free_table(&vm.globals)
 	free_table(&vm.strings)
 	free_objects(vm)
+	assert(vm.bytes_allocated == 0, "gc: bytes_allocated leaked")
 }
 
 @(private)
@@ -84,7 +95,15 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
 	vm_reset_stack(vm)
 }
 
+@(private)
+vm_runtime_context :: proc(vm: ^VM) -> runtime.Context {
+	ctx := runtime.default_context()
+	ctx.allocator = vm.alloc
+	return ctx
+}
+
 define_native :: proc(vm: ^VM, name: string, function: NativeFn) {
+	context = vm_runtime_context(vm)
 	name_object := copy_string(vm, name)
 	stack_push(vm, val_obj(name_object))
 	stack_push(vm, val_obj(new_native(vm, function, name_object)))
@@ -93,6 +112,7 @@ define_native :: proc(vm: ^VM, name: string, function: NativeFn) {
 }
 
 interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
+	context.allocator = vm.alloc
 	function := compile(vm, source)
 	if function == nil do return .CompileError
 
@@ -175,9 +195,7 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_coun
 }
 
 @(private)
-capture_upvalue :: proc "contextless" (vm: ^VM, local: ^Value) -> ^ObjectUpvalue {
-	context = runtime.default_context()
-
+capture_upvalue :: proc(vm: ^VM, local: ^Value) -> ^ObjectUpvalue {
 	prev_upvalue: ^ObjectUpvalue
 	upvalue := vm.open_upvalues
 	for upvalue != nil && upvalue.location > local {
@@ -224,8 +242,8 @@ is_falsey :: #force_inline proc "contextless" (value: Value) -> bool {
 }
 
 @(private = "file")
-concatenate :: #force_inline proc "contextless" (vm: ^VM, lhs, rhs: ^ObjectString) {
-	context = runtime.default_context()
+concatenate :: #force_inline proc(vm: ^VM, lhs, rhs: ^ObjectString) {
+	context.allocator = vm.alloc
 
 	result := take_string(vm, strings.concatenate({lhs.chars, rhs.chars}))
 
@@ -395,6 +413,7 @@ do_get_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretR
 
 @(private = "file")
 do_define_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	context = vm_runtime_context(vm)
 	name := read_string(frame)
 	table_set(&vm.globals, name, peek(vm, 0))
 	stack_drop(vm)
@@ -403,6 +422,7 @@ do_define_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> Interpr
 
 @(private = "file")
 do_set_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	context = vm_runtime_context(vm)
 	name := read_string(frame)
 	if table_set(&vm.globals, name, peek(vm, 0)) {
 		table_delete(&vm.globals, name)
@@ -477,6 +497,7 @@ do_add :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	lhs_str, lhs_is_str := check_string(peek(vm, 1))
 
 	if lhs_is_str && rhs_is_str {
+		context = vm_runtime_context(vm)
 		concatenate(vm, lhs_str, rhs_str)
 		return #must_tail vm_run(vm, frame)
 	}
@@ -552,7 +573,7 @@ do_call :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult 
 
 @(private = "file")
 do_closure :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	context = runtime.default_context()
+	context = vm_runtime_context(vm)
 	function := as_function(read_constant(frame))
 	closure := new_closure(vm, function)
 	stack_push(vm, val_obj(closure))

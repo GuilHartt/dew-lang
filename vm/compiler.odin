@@ -96,6 +96,7 @@ mark_compiler_roots :: proc(vm: ^VM) {
 compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) {
 	compiler.enclosing = parser.compiler
 	parser.compiler = compiler
+	parser.vm.compiler = compiler
 
 	compiler.type = type
 	compiler.local_count = 0
@@ -254,6 +255,7 @@ end_compiler :: proc(parser: ^Parser) -> ^ObjectFunction {
 	}
 
 	parser.compiler = parser.compiler.enclosing
+	parser.vm.compiler = parser.compiler
 	return function
 }
 

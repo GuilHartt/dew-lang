@@ -1,8 +1,74 @@
 package vm
 
+import "base:runtime"
 import "core:fmt"
+import "core:mem"
 
 GC_HEAP_GROW_FACTOR :: 2
+
+GcState :: struct {
+	backing: runtime.Allocator,
+	vm:      ^VM,
+	in_gc:   bool,
+}
+
+@(private)
+gc_allocator_proc :: proc(allocator_data: rawptr, mode: runtime.Allocator_Mode, size, alignment: int, old_memory: rawptr, old_size: int, location := #caller_location) -> (data: []byte, err: runtime.Allocator_Error) {
+	state := cast(^GcState)allocator_data
+	backing := state.backing
+	vm := state.vm
+
+	#partial switch mode {
+	case .Alloc, .Alloc_Non_Zeroed:
+		data = backing.procedure(backing.data, mode, size, alignment, nil, 0, location) or_return
+		vm.bytes_allocated += size
+		maybe_collect_garbage(vm)
+		return data, .None
+	case .Free:
+		assert(old_memory != nil, "gc: free of nil pointer", location)
+		assert(old_size > 0, "gc: free without size, use mem.free_with_size", location)
+		_, err = backing.procedure(backing.data, .Free, 0, 0, old_memory, old_size, location)
+		if err == .None do vm.bytes_allocated -= old_size
+		return nil, err
+	case .Resize, .Resize_Non_Zeroed:
+		if old_memory == nil {
+			data = backing.procedure(backing.data, mode, size, alignment, nil, 0, location) or_return
+			vm.bytes_allocated += size
+			if size > 0 do maybe_collect_garbage(vm)
+			return data, .None
+		}
+		if size == 0 {
+			assert(old_size > 0, "gc: resize to zero without size", location)
+			_, err = backing.procedure(backing.data, .Free, 0, 0, old_memory, old_size, location)
+			if err == .None do vm.bytes_allocated -= old_size
+			return nil, err
+		}
+		if size == old_size {
+			return mem.byte_slice(old_memory, size), .None
+		}
+		data = backing.procedure(backing.data, mode, size, alignment, old_memory, old_size, location) or_return
+		vm.bytes_allocated += size - old_size
+		if size > old_size do maybe_collect_garbage(vm)
+		return data, .None
+	case .Query_Features:
+		return backing.procedure(backing.data, mode, size, alignment, old_memory, old_size, location)
+	case .Query_Info:
+		return backing.procedure(backing.data, mode, size, alignment, old_memory, old_size, location)
+	}
+
+	return backing.procedure(backing.data, mode, size, alignment, old_memory, old_size, location)
+}
+
+@(private = "file")
+maybe_collect_garbage :: proc(vm: ^VM) {
+	when DEW_DEBUG_STRESS_GC {
+		collect_garbage(vm)
+	} else {
+		if vm.bytes_allocated > vm.next_gc && !vm.gc_state.in_gc {
+			collect_garbage(vm)
+		}
+	}
+}
 
 @(private)
 free_object :: proc(vm: ^VM, object: ^Object) {
@@ -10,28 +76,25 @@ free_object :: proc(vm: ^VM, object: ^Object) {
 		fmt.printfln("%p free type %v", object, object.type)
 	}
 
+	context.allocator = vm.alloc
+
 	switch object.type {
 	case .Closure:
 		closure := cast(^ObjectClosure)object
-		vm.bytes_allocated -= size_of(ObjectClosure)
 		delete(closure.upvalues)
-		free(closure)
+		mem.free_with_size(closure, size_of(ObjectClosure))
 	case .Function:
 		function := cast(^ObjectFunction)object
-		vm.bytes_allocated -= size_of(ObjectFunction)
 		chunk_free(&function.chunk)
-		free(function)
+		mem.free_with_size(function, size_of(ObjectFunction))
 	case .Native:
-		vm.bytes_allocated -= size_of(ObjectNative)
-		free(cast(^ObjectNative)object)
+		mem.free_with_size(cast(^ObjectNative)object, size_of(ObjectNative))
 	case .String:
 		str := cast(^ObjectString)object
-		vm.bytes_allocated -= size_of(ObjectString)
-		delete(str.chars)
-		free(str)
+		delete(str.chars, vm.alloc)
+		mem.free_with_size(str, size_of(ObjectString))
 	case .Upvalue:
-		vm.bytes_allocated -= size_of(ObjectUpvalue)
-		free(cast(^ObjectUpvalue)object)
+		mem.free_with_size(cast(^ObjectUpvalue)object, size_of(ObjectUpvalue))
 	}
 }
 
@@ -48,6 +111,9 @@ free_objects :: proc(vm: ^VM) {
 
 @(private)
 collect_garbage :: proc(vm: ^VM) {
+	vm.gc_state.in_gc = true
+	defer vm.gc_state.in_gc = false
+
 	when DEW_DEBUG_LOG_GC {
 		fmt.println("--gc begin")
 		before := vm.bytes_allocated
@@ -118,6 +184,8 @@ blacken_object :: proc(vm: ^VM, object: ^Object) {
 		mark_array(vm, function.chunk.constants[:])
 	case .Upvalue:
 		mark_value(vm, (cast(^ObjectUpvalue)object).closed)
+	case .Native:
+		mark_object(vm, (cast(^ObjectNative)object).name)
 	}
 }
 

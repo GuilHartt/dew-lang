@@ -33,6 +33,8 @@ repl :: proc() {
 
         delete(line)
     }
+
+    vm.destroy(&dewvm)
 }
 
 run :: proc(path: string) {
@@ -49,4 +51,6 @@ run :: proc(path: string) {
         case .CompileError: os.exit(65)
         case .RuntimeError: os.exit(70)
     }
+
+    vm.destroy(&dewvm)
 }
