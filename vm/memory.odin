@@ -79,6 +79,8 @@ free_object :: proc(vm: ^VM, object: ^Object) {
 	context.allocator = vm.alloc
 
 	switch object.type {
+	case .Class:
+		mem.free_with_size(cast(^ObjectClass)object, size_of(ObjectClass))
 	case .Closure:
 		closure := cast(^ObjectClosure)object
 		delete(closure.upvalues)
@@ -87,6 +89,10 @@ free_object :: proc(vm: ^VM, object: ^Object) {
 		function := cast(^ObjectFunction)object
 		chunk_free(&function.chunk)
 		mem.free_with_size(function, size_of(ObjectFunction))
+	case .Instance:
+		instance := cast(^ObjectInstance)object
+		free_table(&instance.fields)
+		mem.free_with_size(instance, size_of(ObjectInstance))
 	case .Native:
 		mem.free_with_size(cast(^ObjectNative)object, size_of(ObjectNative))
 	case .String:
@@ -172,6 +178,9 @@ blacken_object :: proc(vm: ^VM, object: ^Object) {
 	}
 
 	#partial switch object.type {
+	case .Class:
+		class := cast(^ObjectClass)object
+		mark_object(vm, class.name)
 	case .Closure:
 		closure := cast(^ObjectClosure)object
 		mark_object(vm, closure.function)
@@ -182,6 +191,10 @@ blacken_object :: proc(vm: ^VM, object: ^Object) {
 		function := cast(^ObjectFunction)object
 		mark_object(vm, function.name)
 		mark_array(vm, function.chunk.constants[:])
+	case .Instance:
+		instance := cast(^ObjectInstance)object
+		mark_object(vm, instance.class)
+		mark_table(vm, &instance.fields)
 	case .Upvalue:
 		mark_value(vm, (cast(^ObjectUpvalue)object).closed)
 	case .Native:

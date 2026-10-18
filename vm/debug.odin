@@ -22,7 +22,7 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
 
     instruction := Opcode(chunk.instructions[offset])
     switch instruction {
-        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal:
+        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal, .Class, .GetProperty, .SetProperty:
             return constant_instruction(instruction, chunk, offset)
         case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .CloseUpvalue, .Return:
             return simple_instruction(instruction, offset)
@@ -45,15 +45,15 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
             for i in 0 ..< function.upvalue_count {
                 is_local := chunk.instructions[offset]
                 index := chunk.instructions[offset + 1]
-                
+
                 fmt.printf("%04d      |                     %s %d\n",
                     offset,
                     is_local == 1 ? "local" : "upvalue",
                     index)
-                
+
                 offset += 2
             }
-            
+
             return offset
         case:
             fmt.printfln("Unknown opcode %v", instruction)

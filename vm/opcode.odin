@@ -13,6 +13,8 @@ Opcode :: enum u8 {
     SetGlobal,
     GetUpvalue,
     SetUpvalue,
+    GetProperty,
+    SetProperty,
     Equal,
     Greater,
     Less,
@@ -30,4 +32,5 @@ Opcode :: enum u8 {
     Closure,
     CloseUpvalue,
     Return,
+    Class,
 }

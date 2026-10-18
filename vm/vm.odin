@@ -175,10 +175,15 @@ call :: #force_inline proc "contextless" (
 call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_count: int) -> bool {
 	if is_obj(callee) {
 		#partial switch obj_type(callee) {
+		case .Class:
+			context = vm_runtime_context(vm)
+			class := as_class(callee)
+			vm.stack[vm.sp -arg_count - 1] = val_obj(new_instance(vm, class))
+			return true
 		case .Closure:
 			return call(vm, as_closure(callee), arg_count)
 		case .Native:
-			context = runtime.default_context()
+			context = vm_runtime_context(vm)
 			native := as_native(callee)
 
 			if result, ok := native(vm, vm.stack[vm.sp - arg_count:vm.sp]); ok {
@@ -275,10 +280,7 @@ read_string :: #force_inline proc "contextless" (frame: ^CallFrame) -> ^ObjectSt
 }
 
 @(private = "file")
-check_numbers :: #force_inline proc "contextless" (
-	vm: ^VM,
-	frame: ^CallFrame,
-) -> (
+check_numbers :: #force_inline proc "contextless" (vm: ^VM, frame: ^CallFrame,) -> (
 	f64,
 	f64,
 	InterpretResult,
@@ -311,6 +313,8 @@ LUT := [Opcode]OpcodeProc {
 	.SetGlobal    = do_set_global,
 	.GetUpvalue   = do_get_upvalue,
 	.SetUpvalue   = do_set_upvalue,
+	.GetProperty  = do_get_property,
+	.SetProperty  = do_set_property,
 	.Equal        = do_equal,
 	.Greater      = do_greater,
 	.Less         = do_less,
@@ -328,6 +332,7 @@ LUT := [Opcode]OpcodeProc {
 	.Closure      = do_closure,
 	.CloseUpvalue = do_close_upvalue,
 	.Return       = do_return,
+	.Class        = do_class,
 }
 
 @(private)
@@ -443,6 +448,46 @@ do_get_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> Interpret
 do_set_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	slot := read_byte(frame)
 	frame.closure.upvalues[slot].location^ = peek(vm, 0)
+	return #must_tail vm_run(vm, frame)
+}
+
+@(private = "file")
+do_get_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	if !(is_instance(peek(vm, 0))) {
+		runtime_error(vm, "Only instances have properties.")
+		return .RuntimeError
+	}
+	
+	instance := as_instance(peek(vm, 0))
+	name := read_string(frame)
+
+	value, exists := table_get(&instance.fields, name)
+	if !exists {
+		runtime_error(vm, "Undefined property '%s'.", name.chars)
+		return .RuntimeError
+	}
+
+	stack_pop(vm)
+	stack_push(vm, value)
+
+	return #must_tail vm_run(vm, frame)
+}
+
+@(private = "file")
+do_set_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	if !(is_instance(peek(vm, 1))) {
+		runtime_error(vm, "Only instances have fields.")
+		return .RuntimeError
+	}
+
+	instance := as_instance(peek(vm, 1))
+	
+	context = vm_runtime_context(vm)
+	table_set(&instance.fields, read_string(frame), peek(vm, 0))
+	value := stack_pop(vm)
+	stack_pop(vm)
+	stack_push(vm, value)
+
 	return #must_tail vm_run(vm, frame)
 }
 
@@ -613,4 +658,11 @@ do_return :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResul
 	stack_push(vm, result)
 
 	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
+}
+
+@(private = "file")
+do_class :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	context = vm_runtime_context(vm)
+	stack_push(vm, val_obj(new_class(vm, read_string(frame))))
+	return #must_tail vm_run(vm, frame)
 }

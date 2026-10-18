@@ -318,6 +318,19 @@ call :: proc(parser: ^Parser, can_assign: bool) {
 }
 
 @(private = "file")
+dot :: proc(parser: ^Parser, can_assign: bool) {
+	consume(parser, .Identifier, "Expect property name after '.'.")
+	name := identifier_constant(parser, &parser.previous)
+
+	if can_assign && match(parser, .Equal) {
+		expression(parser)
+		emit_short(parser, .SetProperty, name)
+	} else {
+		emit_short(parser, .GetProperty, name)
+	}
+}
+
+@(private = "file")
 parse_literal :: proc(parser: ^Parser, can_assign: bool) {
 	#partial switch parser.previous.type {
 	case .False:
@@ -409,6 +422,7 @@ unary :: proc(parser: ^Parser, can_assign: bool) {
 @(private = "file", rodata)
 rules := #partial [TokenType]ParseRule {
 	.LeftParen    = {grouping, call, .Call},
+	.Dot          = {nil, dot, .Call},
 	.Minus        = {unary, binary, .Term},
 	.Plus         = {nil, binary, .Term},
 	.Slash        = {nil, binary, .Factor},
@@ -647,6 +661,19 @@ function :: proc(parser: ^Parser, type: FunctionType) {
 	}
 }
 
+@(private="file")
+class_declaration :: proc(parser: ^Parser) {
+	consume(parser, .Identifier, "Expect class name.")
+	name_constant := identifier_constant(parser, &parser.previous)
+	declare_variable(parser)
+
+	emit_short(parser, .Class, name_constant)
+	define_variable(parser, name_constant)
+
+	consume(parser, .LeftBrace, "Expect '{' before class body.")
+	consume(parser, .RightBrace, "Expect '}' after class body.")
+}
+
 @(private = "file")
 fn_declaration :: proc(parser: ^Parser) {
 	global := parse_variable(parser, "Expect function name.")
@@ -802,7 +829,9 @@ synchronize :: proc(parser: ^Parser) {
 
 @(private = "file")
 declaration :: proc(parser: ^Parser) {
-	if match(parser, .Fn) {
+	if match(parser, .Class) {
+		class_declaration(parser)
+	} else if match(parser, .Fn) {
 		fn_declaration(parser)
 	} else if match(parser, .Var) {
 		var_declaration(parser)

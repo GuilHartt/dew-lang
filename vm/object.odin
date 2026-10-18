@@ -5,8 +5,10 @@ import "core:hash"
 import "core:strings"
 
 ObjectType :: enum u8 {
+	Class,
 	Closure,
 	Function,
+	Instance,
 	Native,
 	String,
 	Upvalue,
@@ -51,6 +53,17 @@ ObjectClosure :: struct {
 	using obj: Object,
 	function:  ^ObjectFunction,
 	upvalues:  []^ObjectUpvalue,
+}
+
+ObjectClass :: struct {
+	using obj: Object,
+	name:      ^ObjectString,
+}
+
+ObjectInstance :: struct {
+	using obj: Object,
+	class:     ^ObjectClass,
+	fields:    Table,
 }
 
 @(private = "file")
@@ -108,10 +121,14 @@ take_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
 @(private)
 print_object :: proc(object: ^Object) {
 	switch object.type {
+	case .Class:
+		fmt.print((cast(^ObjectClass)object).name.chars)
 	case .Closure:
 		print_function((cast(^ObjectClosure)object).function)
 	case .Function:
 		print_function(cast(^ObjectFunction)object)
+	case .Instance:
+		fmt.printf("%s instance", (cast(^ObjectInstance)object).class.name.chars)
 	case .Native:
 		fmt.print((cast(^ObjectNative)object).name.chars)
 	case .String:
@@ -135,6 +152,13 @@ new_function :: proc(vm: ^VM) -> ^ObjectFunction {
 	return function
 }
 
+new_instance :: proc(vm: ^VM, class: ^ObjectClass) -> ^ObjectInstance {
+	instance := allocate_object(vm, ObjectInstance, .Instance)
+	instance.class = class
+	init_table(&instance.fields)
+	return instance
+}
+
 new_native :: proc(vm: ^VM, function: NativeFn, name: ^ObjectString) -> ^ObjectNative {
 	native := allocate_object(vm, ObjectNative, .Native)
 	native.function = function
@@ -147,6 +171,12 @@ new_upvalue :: proc(vm: ^VM, slot: ^Value) -> ^ObjectUpvalue {
 	upvalue.closed = val_nil()
 	upvalue.location = slot
 	return upvalue
+}
+
+new_class :: proc(vm: ^VM, name: ^ObjectString) -> ^ObjectClass {
+	class := allocate_object(vm, ObjectClass, .Class)
+	class.name = name
+	return class
 }
 
 new_closure :: proc(vm: ^VM, function: ^ObjectFunction) -> ^ObjectClosure {
