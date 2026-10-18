@@ -67,7 +67,8 @@ Compiler :: struct {
 }
 
 ClassCompiler :: struct {
-	enclosing: ^ClassCompiler,
+	enclosing:      ^ClassCompiler,
+	has_superclass: bool,
 }
 
 compile :: proc(vm: ^VM, source: string) -> ^ObjectFunction {
@@ -426,6 +427,40 @@ variable :: proc(parser: ^Parser, can_assign: bool) {
 }
 
 @(private = "file")
+synthetic_token :: proc(text: string) -> Token {
+	token: Token
+	token.lexeme = text
+	return token
+}
+
+@(private = "file")
+super :: proc(parser: ^Parser, can_assign: bool) {
+	if parser.vm.current_class == nil {
+		error(parser, "Can't use 'super' outside of a class.")
+	} else if !parser.vm.current_class.has_superclass {
+		error(parser, "Can't use 'super' in a class with no superclass.")
+	}
+
+	consume(parser, .Dot, "Expect '.' after 'super'.")
+	consume(parser, .Identifier, "Expect superclass method name.")
+	name := identifier_constant(parser, &parser.previous)
+
+	self_token := synthetic_token("self")
+	named_variable(parser, &self_token, false)
+
+	super_token := synthetic_token("super")
+	if match(parser, .LeftParen) {
+		arg_count := argument_list(parser)
+		named_variable(parser, &super_token, false)
+		emit_short(parser, .SuperInvoke, name)
+		emit_byte(parser, arg_count)
+	} else {
+		named_variable(parser, &super_token, false)
+		emit_short(parser, .GetSuper, name)
+	}
+}
+
+@(private = "file")
 self :: proc(parser: ^Parser, can_assign: bool) {
 	if parser.vm.current_class == nil {
 		error(parser, "Can't use 'this' outside of a class.")
@@ -470,6 +505,7 @@ rules := #partial [TokenType]ParseRule {
 	.False        = {parse_literal, nil, .None},
 	.Nil          = {parse_literal, nil, .None},
 	.Or           = {nil, or, .Or},
+	.Super        = {super, nil, .None},
 	.Self         = {self, nil, .None},
 	.True         = {parse_literal, nil, .None},
 }
@@ -715,8 +751,26 @@ class_declaration :: proc(parser: ^Parser) {
 	define_variable(parser, name_constant)
 
 	class_compiler: ClassCompiler
+	class_compiler.has_superclass = false
 	class_compiler.enclosing = parser.vm.current_class
 	parser.vm.current_class = &class_compiler
+
+	if match(parser, .Less) {
+		consume(parser, .Identifier, "Expect superclass name.")
+		variable(parser, false)
+
+		if class_name.lexeme == parser.previous.lexeme {
+			error(parser, "A class can't inherit from itself.")
+		}
+
+		begin_scope(parser)
+		add_local(parser, synthetic_token("super"))
+		define_variable(parser, 0)
+
+		named_variable(parser, &class_name, false)
+		emit_byte(parser, u8(Opcode.Inherit))
+		class_compiler.has_superclass = true
+	}
 
 	named_variable(parser, &class_name, false)
 	consume(parser, .LeftBrace, "Expect '{' before class body.")
@@ -725,6 +779,10 @@ class_declaration :: proc(parser: ^Parser) {
 	}
 	consume(parser, .RightBrace, "Expect '}' after class body.")
 	emit_byte(parser, u8(Opcode.Pop))
+
+	if class_compiler.has_superclass {
+		end_scope(parser)
+	}
 
 	parser.vm.current_class = parser.vm.current_class.enclosing
 }

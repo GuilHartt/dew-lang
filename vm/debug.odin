@@ -22,9 +22,9 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
 
     instruction := Opcode(chunk.instructions[offset])
     switch instruction {
-        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal, .Class, .GetProperty, .SetProperty, .Method:
+        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal, .Class, .GetProperty, .SetProperty, .Method, .GetSuper:
             return constant_instruction(instruction, chunk, offset)
-        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .CloseUpvalue, .Return:
+        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .CloseUpvalue, .Return, .Inherit:
             return simple_instruction(instruction, offset)
         case .SetLocal, .GetLocal, .Call, .GetUpvalue, .SetUpvalue:
             return byte_instruction(instruction, chunk, offset)
@@ -55,7 +55,7 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
             }
 
             return offset
-        case .Invoke:
+        case .Invoke, .SuperInvoke:
             return invoke_instruction(instruction, chunk, offset)
         case:
             fmt.printfln("Unknown opcode %v", instruction)

@@ -112,6 +112,11 @@ is_bound_method :: #force_inline proc "contextless" (v: Value) -> bool {
 	return ok && obj.type == .BoundMethod
 }
 
+is_class :: #force_inline proc "contextless" (v: Value) -> bool {
+	obj, ok := v.(^Object)
+	return ok && obj.type == .Class
+}
+
 check_number :: #force_inline proc "contextless" (v: Value) -> (f64, bool) {
     return v.(f64)
 }

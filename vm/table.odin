@@ -108,7 +108,7 @@ table_delete :: proc "contextless" (table: ^Table, key: ^ObjectString) -> bool {
     return true
 }
 
-@(private="file")
+@(private)
 table_add_all :: proc(from: ^Table, to: ^Table) {
     for i in 0..<len(from.entries) {
         entry := &from.entries[i]

@@ -390,6 +390,7 @@ LUT := [Opcode]OpcodeProc {
 	.SetUpvalue   = do_set_upvalue,
 	.GetProperty  = do_get_property,
 	.SetProperty  = do_set_property,
+	.GetSuper     = do_get_super,
 	.Equal        = do_equal,
 	.Greater      = do_greater,
 	.Less         = do_less,
@@ -405,10 +406,12 @@ LUT := [Opcode]OpcodeProc {
 	.Loop         = do_loop,
 	.Call         = do_call,
 	.Invoke       = do_invoke,
+	.SuperInvoke  = do_super_invoke,
 	.Closure      = do_closure,
 	.CloseUpvalue = do_close_upvalue,
 	.Return       = do_return,
 	.Class        = do_class,
+	.Inherit      = do_inherit,
 	.Method       = do_method,
 }
 
@@ -571,6 +574,16 @@ do_set_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> Interpre
 }
 
 @(private = "file")
+do_get_super :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	name := read_string(frame)
+	superclass := as_class(stack_pop(vm))
+	if !bind_method(vm, superclass, name) {
+		return .RuntimeError
+	}
+	return #must_tail vm_run(vm, frame)
+}
+
+@(private = "file")
 do_equal :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	rhs := stack_pop(vm)
 	lhs := stack_pop(vm)
@@ -706,6 +719,18 @@ do_invoke :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResul
 }
 
 @(private = "file")
+do_super_invoke :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	method := read_string(frame)
+	arg_count := read_byte(frame)
+	superclass := as_class(stack_pop(vm))
+	context = vm_runtime_context(vm)
+	if !invoke_from_class(vm, superclass, method, int(arg_count)) {
+		return .RuntimeError
+	}
+	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
+}
+
+@(private = "file")
 do_closure :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	context = vm_runtime_context(vm)
 	function := as_function(read_constant(frame))
@@ -753,6 +778,22 @@ do_return :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResul
 do_class :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	context = vm_runtime_context(vm)
 	stack_push(vm, val_obj(new_class(vm, read_string(frame))))
+	return #must_tail vm_run(vm, frame)
+}
+
+@(private = "file")
+do_inherit :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	superclass := peek(vm, 1)
+	if !is_class(superclass) {
+		runtime_error(vm, "Superclass must be a class.")
+		return .RuntimeError
+	}
+
+	subclass := as_class(peek(vm, 0))
+	context = vm_runtime_context(vm)
+	table_add_all(&as_class(superclass).methods, &subclass.methods)
+	stack_pop(vm)
+
 	return #must_tail vm_run(vm, frame)
 }
 
