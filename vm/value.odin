@@ -1,5 +1,6 @@
 package vm
 
+import "base:runtime"
 import "core:fmt"
 
 Nil :: struct {}
@@ -11,7 +12,9 @@ Value :: union {
     ^Object,
 }
 
-print_value :: proc(value: Value) {
+print_value :: proc "contextless" (value: Value) {
+    context = runtime.default_context()
+
     switch v in value {
         case bool: fmt.print(v ? "true" : "false")
         case Nil:  fmt.print("nil")

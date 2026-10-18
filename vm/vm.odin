@@ -101,15 +101,8 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
 	vm_reset_stack(vm)
 }
 
-@(private)
-vm_runtime_context :: proc(vm: ^VM) -> runtime.Context {
-	ctx := runtime.default_context()
-	ctx.allocator = vm.alloc
-	return ctx
-}
-
 define_native :: proc(vm: ^VM, name: string, function: NativeFn) {
-	context = vm_runtime_context(vm)
+	context.allocator = vm.alloc
 	name_object := copy_string(vm, name)
 	stack_push(vm, val_obj(name_object))
 	stack_push(vm, val_obj(new_native(vm, function, name_object)))
@@ -128,7 +121,7 @@ interpret :: proc(vm: ^VM, source: string) -> InterpretResult {
 	stack_push(vm, val_obj(closure))
 	call(vm, closure, 0)
 
-	return vm_run(vm, &vm.frames[vm.fp - 1])
+	return vm_run(vm)
 }
 
 @(private)
@@ -178,7 +171,7 @@ call :: #force_inline proc "contextless" (
 }
 
 @(private)
-call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_count: int) -> bool {
+call_value :: #force_inline proc (vm: ^VM, callee: Value, arg_count: int) -> bool {
 	if is_obj(callee) {
 		#partial switch obj_type(callee) {
 		case .BoundMethod:
@@ -186,7 +179,6 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_coun
 			vm.stack[vm.sp -arg_count - 1] = bound.receiver
 			return call(vm, bound.method, arg_count)
 		case .Class:
-			context = vm_runtime_context(vm)
 			class := as_class(callee)
 			vm.stack[vm.sp -arg_count - 1] = val_obj(new_instance(vm, class))
 
@@ -202,7 +194,6 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_coun
 		case .Closure:
 			return call(vm, as_closure(callee), arg_count)
 		case .Native:
-			context = vm_runtime_context(vm)
 			native := as_native(callee)
 
 			if result, ok := native(vm, vm.stack[vm.sp - arg_count:vm.sp]); ok {
@@ -219,7 +210,7 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_coun
 }
 
 @(private = "file")
-invoke_from_class :: proc(vm: ^VM, class: ^ObjectClass, name: ^ObjectString, arg_count: int) -> bool {
+invoke_from_class :: proc (vm: ^VM, class: ^ObjectClass, name: ^ObjectString, arg_count: int) -> bool {
 	method, ok := table_get(&class.methods, name)
 	if !ok {
 		runtime_error(vm, "Undefined property '%s'.", name.chars)
@@ -229,10 +220,8 @@ invoke_from_class :: proc(vm: ^VM, class: ^ObjectClass, name: ^ObjectString, arg
 }
 
 @(private = "file")
-invoke :: proc "contextless" (vm: ^VM, name: ^ObjectString, arg_count: int) -> bool {
+invoke :: proc (vm: ^VM, name: ^ObjectString, arg_count: int) -> bool {
 	receiver := peek(vm, arg_count)
-
-	context = vm_runtime_context(vm)
 
 	if !is_instance(receiver) {
 		runtime_error(vm, "Only instances have methods.")
@@ -250,14 +239,13 @@ invoke :: proc "contextless" (vm: ^VM, name: ^ObjectString, arg_count: int) -> b
 }
 
 @(private = "file")
-bind_method :: proc "contextless" (vm: ^VM, class: ^ObjectClass, name: ^ObjectString) -> bool {
+bind_method :: proc (vm: ^VM, class: ^ObjectClass, name: ^ObjectString) -> bool {
 	method, ok := table_get(&class.methods, name)
 	if !ok {
 		runtime_error(vm, "Undefined property '%s'.", name.chars)
 		return false
 	}
 
-	context = vm_runtime_context(vm)
 	bound := new_bound_method(vm, peek(vm, 0), as_closure(method))
 
 	stack_pop(vm)
@@ -301,10 +289,9 @@ close_upvalues :: proc "contextless" (vm: ^VM, last: ^Value) {
 }
 
 @(private = "file")
-define_method :: proc "contextless" (vm: ^VM, name: ^ObjectString) {
+define_method :: proc (vm: ^VM, name: ^ObjectString) {
 	method := peek(vm, 0)
 	class := as_class(peek(vm, 1))
-	context = vm_runtime_context(vm)
 	table_set(&class.methods, name, method)
 	stack_pop(vm)
 }
@@ -322,9 +309,7 @@ is_falsey :: #force_inline proc "contextless" (value: Value) -> bool {
 }
 
 @(private = "file")
-concatenate :: #force_inline proc(vm: ^VM, lhs, rhs: ^ObjectString) {
-	context.allocator = vm.alloc
-
+concatenate :: #force_inline proc (vm: ^VM, lhs, rhs: ^ObjectString) {
 	result := take_string(vm, strings.concatenate({lhs.chars, rhs.chars}))
 
 	stack_drop(vm, 2)
@@ -332,473 +317,397 @@ concatenate :: #force_inline proc(vm: ^VM, lhs, rhs: ^ObjectString) {
 }
 
 @(private = "file")
-read_byte :: #force_inline proc "contextless" (frame: ^CallFrame) -> u8 {
-	b := frame.closure.function.chunk.instructions[frame.ip]
-	frame.ip += 1
-	return b
-}
+trace_instruction :: proc "contextless" (vm: ^VM, chunk: ^Chunk, ip: int) {
+	context = runtime.default_context()
 
-@(private = "file")
-read_short :: #force_inline proc "contextless" (frame: ^CallFrame) -> u16 {
-	return u16(read_byte(frame)) | (u16(read_byte(frame)) << 8)
-}
-
-@(private = "file")
-read_constant :: #force_inline proc "contextless" (frame: ^CallFrame) -> Value {
-	index := read_short(frame)
-	return frame.closure.function.chunk.constants[index]
-}
-
-@(private = "file")
-read_string :: #force_inline proc "contextless" (frame: ^CallFrame) -> ^ObjectString {
-	return as_string(read_constant(frame))
-}
-
-@(private = "file")
-check_numbers :: #force_inline proc "contextless" (vm: ^VM, frame: ^CallFrame,) -> (
-	f64,
-	f64,
-	InterpretResult,
-) {
-	rhs_num, rhs_is_num := check_number(peek(vm, 0))
-	lhs_num, lhs_is_num := check_number(peek(vm, 1))
-
-	if !lhs_is_num || !rhs_is_num {
-		runtime_error(vm, "Operands must be numbers.")
-		return 0, 0, .RuntimeError
+	fmt.print("          ")
+	for i in 0 ..< vm.sp {
+		fmt.print("[ ")
+		print_value(vm.stack[i])
+		fmt.print(" ]")
 	}
+	fmt.println()
 
-	stack_drop(vm, 2)
-	return lhs_num, rhs_num, .Ok
+	disassemble_instruction(chunk, ip)
 }
 
-OpcodeProc :: #type proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult
+@(private = "file")
+read_byte :: #force_inline proc "contextless" (instructions: []u8, ip: ^int) -> u8 {
+	byte := instructions[ip^]
+	ip^ += 1
+	return byte
+}
 
-@(private, rodata)
-LUT := [Opcode]OpcodeProc {
-	.Constant     = do_constant,
-	.Nil          = do_nil,
-	.True         = do_true,
-	.False        = do_false,
-	.Pop          = do_pop,
-	.GetLocal     = do_get_local,
-	.SetLocal     = do_set_local,
-	.GetGlobal    = do_get_global,
-	.DefineGlobal = do_define_global,
-	.SetGlobal    = do_set_global,
-	.GetUpvalue   = do_get_upvalue,
-	.SetUpvalue   = do_set_upvalue,
-	.GetProperty  = do_get_property,
-	.SetProperty  = do_set_property,
-	.GetSuper     = do_get_super,
-	.Equal        = do_equal,
-	.Greater      = do_greater,
-	.Less         = do_less,
-	.Add          = do_add,
-	.Sub          = do_sub,
-	.Mul          = do_mul,
-	.Div          = do_div,
-	.Not          = do_not,
-	.Negate       = do_negate,
-	.Print        = do_print,
-	.Jump         = do_jump,
-	.JumpIfFalse  = do_jump_if_false,
-	.Loop         = do_loop,
-	.Call         = do_call,
-	.Invoke       = do_invoke,
-	.SuperInvoke  = do_super_invoke,
-	.Closure      = do_closure,
-	.CloseUpvalue = do_close_upvalue,
-	.Return       = do_return,
-	.Class        = do_class,
-	.Inherit      = do_inherit,
-	.Method       = do_method,
+@(private = "file")
+read_short :: #force_inline proc "contextless" (instructions: []u8, ip: ^int) -> u16 {
+	low  := read_byte(instructions, ip)
+	high := read_byte(instructions, ip)
+	return u16(low) | (u16(high) << 8)
+}
+
+@(private = "file")
+read_constant :: #force_inline proc "contextless" (constants: []Value, instructions: []u8, ip: ^int) -> Value {
+	return constants[read_short(instructions, ip)]
+}
+
+@(private = "file")
+read_string :: #force_inline proc "contextless" (constants: []Value, instructions: []u8, ip: ^int) -> ^ObjectString {
+	return as_string(read_constant(constants, instructions, ip))
+}
+
+@(private = "file")
+load_frame :: #force_inline proc "contextless" (vm: ^VM) -> (
+	frame: ^CallFrame,
+	instructions: []u8,
+	constants: []Value,
+	ip: int,
+	slots: int,
+) {
+	frame = &vm.frames[vm.fp - 1]
+	instructions = frame.closure.function.chunk.instructions[:]
+	constants = frame.closure.function.chunk.constants[:]
+	ip = frame.ip
+	slots = frame.slots
+	return
 }
 
 @(private)
-vm_run :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+vm_run :: proc(vm: ^VM) -> InterpretResult {
+	frame, instructions, constants, ip, slots := load_frame(vm)
 
-	if frame.ip >= len(frame.closure.function.chunk.instructions) {
-		return .Ok
-	}
-
-	when DEW_DEBUG_TRACE {
-		context = runtime.default_context()
-
-		fmt.print("          ")
-		for i in 0 ..< vm.sp {
-			fmt.print("[ ")
-			print_value(vm.stack[i])
-			fmt.print(" ]")
+	for {
+		when DEW_DEBUG_TRACE {
+			trace_instruction(vm, &frame.closure.function.chunk, ip)
 		}
-		fmt.println()
 
-		disassemble_instruction(&frame.function.chunk, frame.ip)
-	}
+		op := Opcode(instructions[ip])
+		ip += 1
 
-	return #must_tail LUT[Opcode(read_byte(frame))](vm, frame)
-}
+		switch op {
+		case .Constant: {
+			stack_push(vm, read_constant(constants, instructions, &ip))
+		}
 
-@(private = "file")
-do_constant :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	constant := read_constant(frame)
-	stack_push(vm, constant)
-	return #must_tail vm_run(vm, frame)
-}
+		case .Nil: {
+			stack_push(vm, val_nil())
+		}
 
-@(private = "file")
-do_nil :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	stack_push(vm, val_nil())
-	return #must_tail vm_run(vm, frame)
-}
+		case .True: {
+			stack_push(vm, val_bool(true))
+		}
 
-@(private = "file")
-do_true :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	stack_push(vm, val_bool(true))
-	return #must_tail vm_run(vm, frame)
-}
+		case .False: {
+			stack_push(vm, val_bool(false))
+		}
 
-@(private = "file")
-do_false :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	stack_push(vm, val_bool(false))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Pop: {
+			stack_drop(vm)
+		}
 
-@(private = "file")
-do_pop :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	stack_drop(vm)
-	return #must_tail vm_run(vm, frame)
-}
+		case .GetLocal: {
+			slot := read_byte(instructions, &ip)
+			stack_push(vm, vm.stack[slots + int(slot)])
+		}
 
-@(private = "file")
-do_get_local :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	slot := read_byte(frame)
-	stack_push(vm, vm.stack[frame.slots + int(slot)])
-	return #must_tail vm_run(vm, frame)
-}
+		case .SetLocal: {
+			slot := read_byte(instructions, &ip)
+			vm.stack[slots + int(slot)] = peek(vm, 0)
+		}
 
-@(private = "file")
-do_set_local :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	slot := read_byte(frame)
-	vm.stack[frame.slots + int(slot)] = peek(vm, 0)
-	return #must_tail vm_run(vm, frame)
-}
+		case .GetUpvalue: {
+			slot := read_byte(instructions, &ip)
+			stack_push(vm, frame.closure.upvalues[slot].location^)
+		}
 
-@(private = "file")
-do_get_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	name := read_string(frame)
-	value, exists := table_get(&vm.globals, name)
-	if !exists {
-		runtime_error(vm, "Undefined variable '%s'.", name.chars)
-		return .RuntimeError
-	}
-	stack_push(vm, value)
-	return #must_tail vm_run(vm, frame)
-}
+		case .SetUpvalue: {
+			slot := read_byte(instructions, &ip)
+			frame.closure.upvalues[slot].location^ = peek(vm, 0)
+		}
 
-@(private = "file")
-do_define_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	context = vm_runtime_context(vm)
-	name := read_string(frame)
-	table_set(&vm.globals, name, peek(vm, 0))
-	stack_drop(vm)
-	return #must_tail vm_run(vm, frame)
-}
+		case .GetGlobal: {
+			name := read_string(constants, instructions, &ip)
+			value, exists := table_get(&vm.globals, name)
+			if !exists {
+				frame.ip = ip
+				runtime_error(vm, "Undefined variable '%s'.", name.chars)
+				return .RuntimeError
+			}
+			stack_push(vm, value)
+		}
 
-@(private = "file")
-do_set_global :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	context = vm_runtime_context(vm)
-	name := read_string(frame)
-	if table_set(&vm.globals, name, peek(vm, 0)) {
-		table_delete(&vm.globals, name)
-		runtime_error(vm, "Undefined variable '%s'.", name.chars)
-		return .RuntimeError
-	}
-	return #must_tail vm_run(vm, frame)
-}
+		case .DefineGlobal: {
+			name := read_string(constants, instructions, &ip)
+			table_set(&vm.globals, name, peek(vm, 0))
+			stack_drop(vm)
+		}
 
-@(private = "file")
-do_get_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	slot := read_byte(frame)
-	stack_push(vm, frame.closure.upvalues[slot].location^)
-	return #must_tail vm_run(vm, frame)
-}
+		case .SetGlobal: {
+			name := read_string(constants, instructions, &ip)
+			if table_set(&vm.globals, name, peek(vm, 0)) {
+				table_delete(&vm.globals, name)
+				frame.ip = ip
+				runtime_error(vm, "Undefined variable '%s'.", name.chars)
+				return .RuntimeError
+			}
+		}
 
-@(private = "file")
-do_set_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	slot := read_byte(frame)
-	frame.closure.upvalues[slot].location^ = peek(vm, 0)
-	return #must_tail vm_run(vm, frame)
-}
+		case .GetProperty: {
+			if !is_instance(peek(vm, 0)) {
+				frame.ip = ip
+				runtime_error(vm, "Only instances have properties.")
+				return .RuntimeError
+			}
 
-@(private = "file")
-do_get_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	if !(is_instance(peek(vm, 0))) {
-		runtime_error(vm, "Only instances have properties.")
-		return .RuntimeError
-	}
-	
-	instance := as_instance(peek(vm, 0))
-	name := read_string(frame)
+			instance := as_instance(peek(vm, 0))
+			name := read_string(constants, instructions, &ip)
 
-	value, exists := table_get(&instance.fields, name)
-	if exists {
-		stack_pop(vm)
-		stack_push(vm, value)
-		return #must_tail vm_run(vm, frame)
-	}
+			value, exists := table_get(&instance.fields, name)
+			if exists {
+				stack_pop(vm)
+				stack_push(vm, value)
+			} else {
+				frame.ip = ip
+				if !bind_method(vm, instance.class, name) {
+					return .RuntimeError
+				}
+			}
+		}
 
-	if !bind_method(vm, instance.class, name) {
-		return .RuntimeError
-	}
+		case .SetProperty: {
+			if !is_instance(peek(vm, 1)) {
+				frame.ip = ip
+				runtime_error(vm, "Only instances have fields.")
+				return .RuntimeError
+			}
 
-	return #must_tail vm_run(vm, frame)
-}
+			instance := as_instance(peek(vm, 1))
+			table_set(&instance.fields, read_string(constants, instructions, &ip), peek(vm, 0))
 
-@(private = "file")
-do_set_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	if !(is_instance(peek(vm, 1))) {
-		runtime_error(vm, "Only instances have fields.")
-		return .RuntimeError
-	}
+			value := stack_pop(vm)
+			stack_pop(vm)
+			stack_push(vm, value)
+		}
 
-	instance := as_instance(peek(vm, 1))
+		case .GetSuper: {
+			name := read_string(constants, instructions, &ip)
+			superclass := as_class(stack_pop(vm))
+			frame.ip = ip
+			if !bind_method(vm, superclass, name) {
+				return .RuntimeError
+			}
+		}
 
-	context = vm_runtime_context(vm)
-	table_set(&instance.fields, read_string(frame), peek(vm, 0))
-	value := stack_pop(vm)
-	stack_pop(vm)
-	stack_push(vm, value)
+		case .Equal: {
+			rhs := stack_pop(vm)
+			lhs := stack_pop(vm)
+			stack_push(vm, val_bool(lhs == rhs))
+		}
 
-	return #must_tail vm_run(vm, frame)
-}
+		case .Greater: {
+			rhs_num, rhs_is_num := check_number(peek(vm, 0))
+			lhs_num, lhs_is_num := check_number(peek(vm, 1))
+			if !lhs_is_num || !rhs_is_num {
+				frame.ip = ip
+				runtime_error(vm, "Operands must be numbers.")
+				return .RuntimeError
+			}
+			stack_drop(vm, 2)
+			stack_push(vm, val_bool(lhs_num > rhs_num))
+		}
 
-@(private = "file")
-do_get_super :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	name := read_string(frame)
-	superclass := as_class(stack_pop(vm))
-	if !bind_method(vm, superclass, name) {
-		return .RuntimeError
-	}
-	return #must_tail vm_run(vm, frame)
-}
+		case .Less: {
+			rhs_num, rhs_is_num := check_number(peek(vm, 0))
+			lhs_num, lhs_is_num := check_number(peek(vm, 1))
+			if !lhs_is_num || !rhs_is_num {
+				frame.ip = ip
+				runtime_error(vm, "Operands must be numbers.")
+				return .RuntimeError
+			}
+			stack_drop(vm, 2)
+			stack_push(vm, val_bool(lhs_num < rhs_num))
+		}
 
-@(private = "file")
-do_equal :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	rhs := stack_pop(vm)
-	lhs := stack_pop(vm)
-	stack_push(vm, val_bool(lhs == rhs))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Add: {
+			rhs_num, rhs_is_num := check_number(peek(vm, 0))
+			lhs_num, lhs_is_num := check_number(peek(vm, 1))
 
-@(private = "file")
-do_negate :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	num, is_num := check_number(peek(vm, 0))
-	if !is_num {
-		runtime_error(vm, "Operand must be a number.")
-		return .RuntimeError
-	}
+			if lhs_is_num && rhs_is_num {
+				stack_drop(vm, 2)
+				stack_push(vm, val_number(lhs_num + rhs_num))
+			} else {
+				rhs_str, rhs_is_str := check_string(peek(vm, 0))
+				lhs_str, lhs_is_str := check_string(peek(vm, 1))
 
-	stack_pop(vm)
-	stack_push(vm, -num)
+				if lhs_is_str && rhs_is_str {
+					concatenate(vm, lhs_str, rhs_str)
+				} else {
+					frame.ip = ip
+					runtime_error(vm, "Operands must be two numbers or two strings.")
+					return .RuntimeError
+				}
+			}
+		}
 
-	return #must_tail vm_run(vm, frame)
-}
+		case .Sub: {
+			rhs_num, rhs_is_num := check_number(peek(vm, 0))
+			lhs_num, lhs_is_num := check_number(peek(vm, 1))
+			if !lhs_is_num || !rhs_is_num {
+				frame.ip = ip
+				runtime_error(vm, "Operands must be numbers.")
+				return .RuntimeError
+			}
+			stack_drop(vm, 2)
+			stack_push(vm, val_number(lhs_num - rhs_num))
+		}
 
-@(private = "file")
-do_greater :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	lhs, rhs := check_numbers(vm, frame) or_return
-	stack_push(vm, val_bool(lhs > rhs))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Mul: {
+			rhs_num, rhs_is_num := check_number(peek(vm, 0))
+			lhs_num, lhs_is_num := check_number(peek(vm, 1))
+			if !lhs_is_num || !rhs_is_num {
+				frame.ip = ip
+				runtime_error(vm, "Operands must be numbers.")
+				return .RuntimeError
+			}
+			stack_drop(vm, 2)
+			stack_push(vm, val_number(lhs_num * rhs_num))
+		}
 
-@(private = "file")
-do_less :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	lhs, rhs := check_numbers(vm, frame) or_return
-	stack_push(vm, val_bool(lhs < rhs))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Div: {
+			rhs_num, rhs_is_num := check_number(peek(vm, 0))
+			lhs_num, lhs_is_num := check_number(peek(vm, 1))
+			if !lhs_is_num || !rhs_is_num {
+				frame.ip = ip
+				runtime_error(vm, "Operands must be numbers.")
+				return .RuntimeError
+			}
+			stack_drop(vm, 2)
+			stack_push(vm, val_number(lhs_num / rhs_num))
+		}
 
-@(private = "file")
-do_add :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	rhs_num, rhs_is_num := check_number(peek(vm, 0))
-	lhs_num, lhs_is_num := check_number(peek(vm, 1))
+		case .Negate: {
+			num, is_num := check_number(peek(vm, 0))
+			if !is_num {
+				frame.ip = ip
+				runtime_error(vm, "Operand must be a number.")
+				return .RuntimeError
+			}
 
-	if lhs_is_num && rhs_is_num {
-		stack_drop(vm, 2)
-		stack_push(vm, val_number(lhs_num + rhs_num))
-		return #must_tail vm_run(vm, frame)
-	}
+			stack_pop(vm)
+			stack_push(vm, -num)
+		}
 
-	rhs_str, rhs_is_str := check_string(peek(vm, 0))
-	lhs_str, lhs_is_str := check_string(peek(vm, 1))
+		case .Not: {
+			stack_push(vm, Value(is_falsey(stack_pop(vm))))
+		}
 
-	if lhs_is_str && rhs_is_str {
-		context = vm_runtime_context(vm)
-		concatenate(vm, lhs_str, rhs_str)
-		return #must_tail vm_run(vm, frame)
-	}
+		case .Print: {
+			print_value(stack_pop(vm))
+			fmt.println()
+		}
 
-	runtime_error(vm, "Operands must be two numbers or two strings.")
-	return .RuntimeError
-}
+		case .Jump: {
+			offset := read_short(instructions, &ip)
+			ip += int(offset)
+		}
 
-@(private = "file")
-do_sub :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	lhs, rhs := check_numbers(vm, frame) or_return
-	stack_push(vm, val_number(lhs - rhs))
-	return #must_tail vm_run(vm, frame)
-}
+		case .JumpIfFalse: {
+			offset := read_short(instructions, &ip)
+			if is_falsey(peek(vm, 0)) {
+				ip += int(offset)
+			}
+		}
 
-@(private = "file")
-do_mul :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	lhs, rhs := check_numbers(vm, frame) or_return
-	stack_push(vm, val_number(lhs * rhs))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Loop: {
+			offset := read_short(instructions, &ip)
+			ip -= int(offset)
+		}
 
-@(private = "file")
-do_div :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	lhs, rhs := check_numbers(vm, frame) or_return
-	stack_push(vm, val_number(lhs / rhs))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Call: {
+			arg_count := int(read_byte(instructions, &ip))
+			frame.ip = ip
+			if !call_value(vm, peek(vm, arg_count), arg_count) {
+				return .RuntimeError
+			}
+			frame, instructions, constants, ip, slots = load_frame(vm)
+		}
 
-@(private = "file")
-do_not :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	stack_push(vm, Value(is_falsey(stack_pop(vm))))
-	return #must_tail vm_run(vm, frame)
-}
+		case .Invoke: {
+			name := read_string(constants, instructions, &ip)
+			arg_count := int(read_byte(instructions, &ip))
+			frame.ip = ip
+			if !invoke(vm, name, arg_count) {
+				return .RuntimeError
+			}
+			frame, instructions, constants, ip, slots = load_frame(vm)
+		}
 
-@(private = "file")
-do_print :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	context = runtime.default_context()
-	print_value(stack_pop(vm))
-	fmt.println()
-	return #must_tail vm_run(vm, frame)
-}
+		case .SuperInvoke: {
+			name := read_string(constants, instructions, &ip)
+			arg_count := int(read_byte(instructions, &ip))
+			superclass := as_class(stack_pop(vm))
+			frame.ip = ip
+			if !invoke_from_class(vm, superclass, name, arg_count) {
+				return .RuntimeError
+			}
+			frame, instructions, constants, ip, slots = load_frame(vm)
+		}
 
-@(private = "file")
-do_jump :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	offset := read_short(frame)
-	frame.ip += int(offset)
-	return #must_tail vm_run(vm, frame)
-}
+		case .Closure: {
+			function := as_function(read_constant(constants, instructions, &ip))
+			closure := new_closure(vm, function)
+			stack_push(vm, val_obj(closure))
 
-@(private = "file")
-do_jump_if_false :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	offset := read_short(frame)
-	if is_falsey(peek(vm, 0)) do frame.ip += int(offset)
-	return #must_tail vm_run(vm, frame)
-}
+			for i in 0 ..< len(closure.upvalues) {
+				is_local := read_byte(instructions, &ip)
+				index := int(read_byte(instructions, &ip))
+				if is_local == 1 {
+					closure.upvalues[i] = capture_upvalue(vm, &vm.stack[slots + index])
+				} else {
+					closure.upvalues[i] = frame.closure.upvalues[index]
+				}
+			}
+		}
 
-@(private = "file")
-do_loop :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	offset := read_short(frame)
-	frame.ip -= int(offset)
-	return #must_tail vm_run(vm, frame)
-}
+		case .CloseUpvalue: {
+			close_upvalues(vm, &vm.stack[vm.sp - 1])
+			stack_drop(vm)
+		}
 
-@(private = "file")
-do_call :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	arg_count := int(read_byte(frame))
-	if !call_value(vm, peek(vm, arg_count), arg_count) {
-		return .RuntimeError
-	}
-	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
-}
+		case .Return: {
+			result := stack_pop(vm)
+			close_upvalues(vm, &vm.stack[slots])
+			vm.fp -= 1
 
-@(private = "file")
-do_invoke :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	method := read_string(frame)
-	arg_count := read_byte(frame)
-	if !invoke(vm, method, int(arg_count)) {
-		return .RuntimeError
-	}
-	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
-}
+			if vm.fp == 0 {
+				stack_drop(vm)
+				return .Ok
+			}
 
-@(private = "file")
-do_super_invoke :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	method := read_string(frame)
-	arg_count := read_byte(frame)
-	superclass := as_class(stack_pop(vm))
-	context = vm_runtime_context(vm)
-	if !invoke_from_class(vm, superclass, method, int(arg_count)) {
-		return .RuntimeError
-	}
-	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
-}
+			vm.sp = slots
+			stack_push(vm, result)
+			frame, instructions, constants, ip, slots = load_frame(vm)
+		}
 
-@(private = "file")
-do_closure :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	context = vm_runtime_context(vm)
-	function := as_function(read_constant(frame))
-	closure := new_closure(vm, function)
-	stack_push(vm, val_obj(closure))
+		case .Class: {
+			stack_push(vm, val_obj(new_class(vm, read_string(constants, instructions, &ip))))
+		}
 
-	for i in 0 ..< len(closure.upvalues) {
-		is_local := read_byte(frame)
-		index := int(read_byte(frame))
-		if is_local == 1 {
-			closure.upvalues[i] = capture_upvalue(vm, &vm.stack[frame.slots + index])
-		} else {
-			closure.upvalues[i] = frame.closure.upvalues[index]
+		case .Inherit: {
+			superclass := peek(vm, 1)
+			if !is_class(superclass) {
+				frame.ip = ip
+				runtime_error(vm, "Superclass must be a class.")
+				return .RuntimeError
+			}
+
+			subclass := as_class(peek(vm, 0))
+			table_add_all(&as_class(superclass).methods, &subclass.methods)
+			stack_pop(vm)
+		}
+
+		case .Method: {
+			define_method(vm, read_string(constants, instructions, &ip))
+		}
 		}
 	}
-
-	return #must_tail vm_run(vm, frame)
-}
-
-@(private = "file")
-do_close_upvalue :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	close_upvalues(vm, &vm.stack[vm.sp - 1])
-	stack_drop(vm)
-	return #must_tail vm_run(vm, frame)
-}
-
-@(private = "file")
-do_return :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	result := stack_pop(vm)
-	close_upvalues(vm, &vm.stack[frame.slots])
-	vm.fp -= 1
-
-	if vm.fp == 0 {
-		stack_drop(vm)
-		return .Ok
-	}
-
-	vm.sp = frame.slots
-	stack_push(vm, result)
-
-	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
-}
-
-@(private = "file")
-do_class :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	context = vm_runtime_context(vm)
-	stack_push(vm, val_obj(new_class(vm, read_string(frame))))
-	return #must_tail vm_run(vm, frame)
-}
-
-@(private = "file")
-do_inherit :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	superclass := peek(vm, 1)
-	if !is_class(superclass) {
-		runtime_error(vm, "Superclass must be a class.")
-		return .RuntimeError
-	}
-
-	subclass := as_class(peek(vm, 0))
-	context = vm_runtime_context(vm)
-	table_add_all(&as_class(superclass).methods, &subclass.methods)
-	stack_pop(vm)
-
-	return #must_tail vm_run(vm, frame)
-}
-
-@(private = "file")
-do_method :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
-	define_method(vm, read_string(frame))
-	return #must_tail vm_run(vm, frame)
 }
