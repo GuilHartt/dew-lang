@@ -22,7 +22,7 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
 
     instruction := Opcode(chunk.instructions[offset])
     switch instruction {
-        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal, .Class, .GetProperty, .SetProperty:
+        case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal, .Class, .GetProperty, .SetProperty, .Method:
             return constant_instruction(instruction, chunk, offset)
         case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .CloseUpvalue, .Return:
             return simple_instruction(instruction, offset)
@@ -55,6 +55,8 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
             }
 
             return offset
+        case .Invoke:
+            return invoke_instruction(instruction, chunk, offset)
         case:
             fmt.printfln("Unknown opcode %v", instruction)
             return offset + 1
@@ -68,6 +70,16 @@ constant_instruction :: proc(op: Opcode, chunk: ^Chunk, offset: int) -> int {
     print_value(chunk.constants[constant])
     fmt.println("'")
     return offset + 3
+}
+
+@(private="file")
+invoke_instruction :: proc(op: Opcode, chunk: ^Chunk, offset: int) -> int {
+    constant := u16(chunk.instructions[offset + 1]) | (u16(chunk.instructions[offset + 2]) << 8)
+    arg_count := chunk.instructions[offset + 3]
+    fmt.printf("%-16v (%d args) %4d '", op, arg_count, constant)
+    print_value(chunk.constants[constant])
+    fmt.println("'")
+    return offset + 4
 }
 
 @(private="file")

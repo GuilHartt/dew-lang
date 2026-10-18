@@ -27,6 +27,7 @@ VM :: struct {
 	sp:              int,
 	globals:         Table,
 	strings:         Table,
+	init_string:     ^ObjectString,
 	open_upvalues:   ^ObjectUpvalue,
 	alloc:           runtime.Allocator,
 	gc_state:        GcState,
@@ -34,6 +35,7 @@ VM :: struct {
 	next_gc:         int,
 	objects:         ^Object,
 	compiler:        ^Compiler,
+	current_class:   ^ClassCompiler,
 	gray_stack:      [dynamic]^Object,
 }
 
@@ -53,6 +55,9 @@ init :: proc(vm: ^VM) {
 	init_table(&vm.globals)
 	init_table(&vm.strings)
 
+	vm.init_string = nil
+	vm.init_string = copy_string(vm, "init")
+
 	define_native(vm, "clock", proc(vm: ^VM, args: []Value) -> (Value, bool) {
 		nanos := time.to_unix_nanoseconds(time.now())
 		return val_number(f64(nanos) / 1e9), true
@@ -63,6 +68,7 @@ destroy :: proc(vm: ^VM) {
 	context.allocator = vm.alloc
 	free_table(&vm.globals)
 	free_table(&vm.strings)
+	vm.init_string = nil
 	free_objects(vm)
 	assert(vm.bytes_allocated == 0, "gc: bytes_allocated leaked")
 }
@@ -175,10 +181,23 @@ call :: #force_inline proc "contextless" (
 call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_count: int) -> bool {
 	if is_obj(callee) {
 		#partial switch obj_type(callee) {
+		case .BoundMethod:
+			bound := as_bound_method(callee)
+			vm.stack[vm.sp -arg_count - 1] = bound.receiver
+			return call(vm, bound.method, arg_count)
 		case .Class:
 			context = vm_runtime_context(vm)
 			class := as_class(callee)
 			vm.stack[vm.sp -arg_count - 1] = val_obj(new_instance(vm, class))
+
+			initializer, ok := table_get(&class.methods, vm.init_string)
+			if ok {
+				return call(vm, as_closure(initializer), arg_count)
+			} else if arg_count != 0 {
+				runtime_error(vm, "Expected 0 arguments but got %d.", arg_count)
+				return false
+			}
+
 			return true
 		case .Closure:
 			return call(vm, as_closure(callee), arg_count)
@@ -197,6 +216,53 @@ call_value :: #force_inline proc "contextless" (vm: ^VM, callee: Value, arg_coun
 	}
 	runtime_error(vm, "Can only call functions and classes.")
 	return false
+}
+
+@(private = "file")
+invoke_from_class :: proc(vm: ^VM, class: ^ObjectClass, name: ^ObjectString, arg_count: int) -> bool {
+	method, ok := table_get(&class.methods, name)
+	if !ok {
+		runtime_error(vm, "Undefined property '%s'.", name.chars)
+		return false
+	}
+	return call(vm, as_closure(method), arg_count)
+}
+
+@(private = "file")
+invoke :: proc "contextless" (vm: ^VM, name: ^ObjectString, arg_count: int) -> bool {
+	receiver := peek(vm, arg_count)
+
+	context = vm_runtime_context(vm)
+
+	if !is_instance(receiver) {
+		runtime_error(vm, "Only instances have methods.")
+		return false
+	}
+
+	instance := as_instance(receiver)
+
+	value, ok := table_get(&instance.fields, name)
+	if ok {
+		vm.stack[vm.sp -arg_count - 1] = value
+		return call_value(vm, value, arg_count)
+	}
+	return invoke_from_class(vm, instance.class, name, arg_count)
+}
+
+@(private = "file")
+bind_method :: proc "contextless" (vm: ^VM, class: ^ObjectClass, name: ^ObjectString) -> bool {
+	method, ok := table_get(&class.methods, name)
+	if !ok {
+		runtime_error(vm, "Undefined property '%s'.", name.chars)
+		return false
+	}
+
+	context = vm_runtime_context(vm)
+	bound := new_bound_method(vm, peek(vm, 0), as_closure(method))
+
+	stack_pop(vm)
+	stack_push(vm, val_obj(bound))
+	return true
 }
 
 @(private)
@@ -232,6 +298,15 @@ close_upvalues :: proc "contextless" (vm: ^VM, last: ^Value) {
 		upvalue.location = &upvalue.closed
 		vm.open_upvalues = upvalue.next_upvalue
 	}
+}
+
+@(private = "file")
+define_method :: proc "contextless" (vm: ^VM, name: ^ObjectString) {
+	method := peek(vm, 0)
+	class := as_class(peek(vm, 1))
+	context = vm_runtime_context(vm)
+	table_set(&class.methods, name, method)
+	stack_pop(vm)
 }
 
 @(private = "file")
@@ -329,10 +404,12 @@ LUT := [Opcode]OpcodeProc {
 	.JumpIfFalse  = do_jump_if_false,
 	.Loop         = do_loop,
 	.Call         = do_call,
+	.Invoke       = do_invoke,
 	.Closure      = do_closure,
 	.CloseUpvalue = do_close_upvalue,
 	.Return       = do_return,
 	.Class        = do_class,
+	.Method       = do_method,
 }
 
 @(private)
@@ -462,13 +539,15 @@ do_get_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> Interpre
 	name := read_string(frame)
 
 	value, exists := table_get(&instance.fields, name)
-	if !exists {
-		runtime_error(vm, "Undefined property '%s'.", name.chars)
-		return .RuntimeError
+	if exists {
+		stack_pop(vm)
+		stack_push(vm, value)
+		return #must_tail vm_run(vm, frame)
 	}
 
-	stack_pop(vm)
-	stack_push(vm, value)
+	if !bind_method(vm, instance.class, name) {
+		return .RuntimeError
+	}
 
 	return #must_tail vm_run(vm, frame)
 }
@@ -481,7 +560,7 @@ do_set_property :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> Interpre
 	}
 
 	instance := as_instance(peek(vm, 1))
-	
+
 	context = vm_runtime_context(vm)
 	table_set(&instance.fields, read_string(frame), peek(vm, 0))
 	value := stack_pop(vm)
@@ -617,6 +696,16 @@ do_call :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult 
 }
 
 @(private = "file")
+do_invoke :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	method := read_string(frame)
+	arg_count := read_byte(frame)
+	if !invoke(vm, method, int(arg_count)) {
+		return .RuntimeError
+	}
+	return #must_tail vm_run(vm, &vm.frames[vm.fp - 1])
+}
+
+@(private = "file")
 do_closure :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	context = vm_runtime_context(vm)
 	function := as_function(read_constant(frame))
@@ -664,5 +753,11 @@ do_return :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResul
 do_class :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
 	context = vm_runtime_context(vm)
 	stack_push(vm, val_obj(new_class(vm, read_string(frame))))
+	return #must_tail vm_run(vm, frame)
+}
+
+@(private = "file")
+do_method :: proc "preserve/none" (vm: ^VM, frame: ^CallFrame) -> InterpretResult {
+	define_method(vm, read_string(frame))
 	return #must_tail vm_run(vm, frame)
 }

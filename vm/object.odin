@@ -5,6 +5,7 @@ import "core:hash"
 import "core:strings"
 
 ObjectType :: enum u8 {
+	BoundMethod,
 	Class,
 	Closure,
 	Function,
@@ -58,12 +59,19 @@ ObjectClosure :: struct {
 ObjectClass :: struct {
 	using obj: Object,
 	name:      ^ObjectString,
+	methods:   Table,
 }
 
 ObjectInstance :: struct {
 	using obj: Object,
 	class:     ^ObjectClass,
 	fields:    Table,
+}
+
+ObjectBoundMethod :: struct {
+	using obj: Object,
+	receiver:  Value,
+	method:    ^ObjectClosure,
 }
 
 @(private = "file")
@@ -121,6 +129,8 @@ take_string :: proc(vm: ^VM, chars: string) -> ^ObjectString {
 @(private)
 print_object :: proc(object: ^Object) {
 	switch object.type {
+	case .BoundMethod:
+		print_function(as_bound_method(object).method.function)
 	case .Class:
 		fmt.print((cast(^ObjectClass)object).name.chars)
 	case .Closure:
@@ -173,9 +183,17 @@ new_upvalue :: proc(vm: ^VM, slot: ^Value) -> ^ObjectUpvalue {
 	return upvalue
 }
 
+new_bound_method :: proc(vm: ^VM, receiver: Value, method: ^ObjectClosure) -> ^ObjectBoundMethod {
+	bound := allocate_object(vm, ObjectBoundMethod, .BoundMethod)
+	bound.receiver = receiver
+	bound.method = method
+	return bound
+}
+
 new_class :: proc(vm: ^VM, name: ^ObjectString) -> ^ObjectClass {
 	class := allocate_object(vm, ObjectClass, .Class)
 	class.name = name
+	init_table(&class.methods)
 	return class
 }
 

@@ -79,8 +79,12 @@ free_object :: proc(vm: ^VM, object: ^Object) {
 	context.allocator = vm.alloc
 
 	switch object.type {
+	case .BoundMethod:
+		mem.free_with_size(cast(^ObjectBoundMethod)object, size_of(ObjectBoundMethod))
 	case .Class:
-		mem.free_with_size(cast(^ObjectClass)object, size_of(ObjectClass))
+		class := cast(^ObjectClass)object
+		free_table(&class.methods)
+		mem.free_with_size(class, size_of(ObjectClass))
 	case .Closure:
 		closure := cast(^ObjectClosure)object
 		delete(closure.upvalues)
@@ -178,9 +182,14 @@ blacken_object :: proc(vm: ^VM, object: ^Object) {
 	}
 
 	#partial switch object.type {
+	case .BoundMethod:
+		bound := cast(^ObjectBoundMethod)object
+		mark_value(vm, bound.receiver)
+		mark_object(vm, bound.method)
 	case .Class:
 		class := cast(^ObjectClass)object
 		mark_object(vm, class.name)
+		mark_table(vm, &class.methods)
 	case .Closure:
 		closure := cast(^ObjectClosure)object
 		mark_object(vm, closure.function)
@@ -218,6 +227,7 @@ mark_roots :: proc(vm: ^VM) {
 
 	mark_table(vm, &vm.globals)
 	mark_compiler_roots(vm)
+	mark_object(vm, vm.init_string)
 }
 
 @(private = "file")

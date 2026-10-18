@@ -1,5 +1,6 @@
 package vm
 
+import "core:math"
 import "core:fmt"
 import "core:strconv"
 
@@ -50,6 +51,8 @@ Upvalue :: struct {
 
 FunctionType :: enum u8 {
 	Function,
+	Initializer,
+	Method,
 	Script,
 }
 
@@ -61,6 +64,10 @@ Compiler :: struct {
 	local_count: int,
 	upvalues:    [LOCAL_MAX]Upvalue,
 	scope_depth: int,
+}
+
+ClassCompiler :: struct {
+	enclosing: ^ClassCompiler,
 }
 
 compile :: proc(vm: ^VM, source: string) -> ^ObjectFunction {
@@ -111,7 +118,11 @@ compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) 
 	compiler.local_count += 1
 	local.depth = 0
 	local.is_captured = false
-	local.name.lexeme = ""
+	if type != .Function {
+		local.name.lexeme = "self"
+	} else {
+		local.name.lexeme = ""
+	}
 }
 
 @(private = "file")
@@ -207,7 +218,12 @@ emit_short :: proc(parser: ^Parser, opcode: Opcode, operand: u16) {
 
 @(private = "file")
 emit_return :: proc(parser: ^Parser) {
-	emit_byte(parser, u8(Opcode.Nil))
+	if parser.vm.compiler.type  == .Initializer {
+		emit_bytes(parser, u8(Opcode.GetLocal), 0)
+	} else {
+		emit_byte(parser, u8(Opcode.Nil))
+	}
+	
 	emit_byte(parser, u8(Opcode.Return))
 }
 
@@ -325,6 +341,10 @@ dot :: proc(parser: ^Parser, can_assign: bool) {
 	if can_assign && match(parser, .Equal) {
 		expression(parser)
 		emit_short(parser, .SetProperty, name)
+	} else if match(parser, .LeftParen) {
+		arg_count := argument_list(parser)
+		emit_short(parser, .Invoke, name)
+		emit_byte(parser, arg_count)
 	} else {
 		emit_short(parser, .GetProperty, name)
 	}
@@ -406,6 +426,15 @@ variable :: proc(parser: ^Parser, can_assign: bool) {
 }
 
 @(private = "file")
+self :: proc(parser: ^Parser, can_assign: bool) {
+	if parser.vm.current_class == nil {
+		error(parser, "Can't use 'this' outside of a class.")
+		return
+	}
+	variable(parser, false)
+}
+
+@(private = "file")
 unary :: proc(parser: ^Parser, can_assign: bool) {
 	operator_type := parser.previous.type
 
@@ -441,6 +470,7 @@ rules := #partial [TokenType]ParseRule {
 	.False        = {parse_literal, nil, .None},
 	.Nil          = {parse_literal, nil, .None},
 	.Or           = {nil, or, .Or},
+	.Self         = {self, nil, .None},
 	.True         = {parse_literal, nil, .None},
 }
 
@@ -662,16 +692,41 @@ function :: proc(parser: ^Parser, type: FunctionType) {
 }
 
 @(private="file")
+method :: proc(parser: ^Parser) {
+	consume(parser, .Identifier, "Expect method name.")
+	constant := identifier_constant(parser, &parser.previous)
+
+	type: FunctionType = .Method
+	if parser.previous.lexeme == "init" {
+		type = .Initializer
+	}
+	function(parser, type)
+	emit_short(parser, .Method, constant)
+}
+
+@(private="file")
 class_declaration :: proc(parser: ^Parser) {
 	consume(parser, .Identifier, "Expect class name.")
+	class_name := parser.previous
 	name_constant := identifier_constant(parser, &parser.previous)
 	declare_variable(parser)
 
 	emit_short(parser, .Class, name_constant)
 	define_variable(parser, name_constant)
 
+	class_compiler: ClassCompiler
+	class_compiler.enclosing = parser.vm.current_class
+	parser.vm.current_class = &class_compiler
+
+	named_variable(parser, &class_name, false)
 	consume(parser, .LeftBrace, "Expect '{' before class body.")
+	for !check(parser, .RightBrace) && !check(parser, .Eof) {
+		method(parser)
+	}
 	consume(parser, .RightBrace, "Expect '}' after class body.")
+	emit_byte(parser, u8(Opcode.Pop))
+
+	parser.vm.current_class = parser.vm.current_class.enclosing
 }
 
 @(private = "file")
@@ -788,6 +843,10 @@ return_statement :: proc(parser: ^Parser) {
 	if match_terminator(parser) {
 		emit_return(parser)
 	} else {
+		if parser.vm.compiler.type == .Initializer {
+			error(parser, "Can't return a value from an initializer.")
+		}
+
 		expression(parser)
 		consume_terminator(parser, "Expect ';' after return value.")
 		emit_byte(parser, u8(Opcode.Return))

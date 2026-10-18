@@ -27,6 +27,13 @@ as_closure :: #force_inline proc "contextless" (v: Value) -> ^ObjectClosure {
     return nil
 }
 
+as_bound_method :: #force_inline proc "contextless" (v: Value) -> ^ObjectBoundMethod {
+    if obj, ok := v.(^Object); ok {
+        return cast(^ObjectBoundMethod)obj
+    }
+    return nil
+}
+
 as_class :: #force_inline proc "contextless" (v: Value) -> ^ObjectClass {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectClass)obj
@@ -98,6 +105,11 @@ is_obj :: #force_inline proc "contextless" (v: Value) -> bool {
 is_instance :: #force_inline proc "contextless" (v: Value) -> bool {
 	obj, ok := v.(^Object)
 	return ok && obj.type == .Instance
+}
+
+is_bound_method :: #force_inline proc "contextless" (v: Value) -> bool {
+	obj, ok := v.(^Object)
+	return ok && obj.type == .BoundMethod
 }
 
 check_number :: #force_inline proc "contextless" (v: Value) -> (f64, bool) {
