@@ -2,9 +2,9 @@ package vm
 
 import "base:runtime"
 import "core:fmt"
+import "core:strings"
 
-Nil :: struct {}
-
+Nil   :: struct {}
 Value :: union {
     Nil,
     bool,
@@ -174,4 +174,46 @@ value_type_name :: proc "contextless" (v: Value) -> string {
     }
 
     return "unknown"
+}
+
+@(private)
+value_to_string :: proc(vm: ^VM, value: Value) -> ^ObjectString {
+    switch v in value {
+    case bool:
+        return copy_string(vm, v ? "true" : "false")
+    case Nil: 
+        return copy_string(vm, "nil")
+    case f64:
+        buf: [64]byte
+        return copy_string(vm, fmt.bprintf(buf[:], "%g", v))
+    case ^Object:
+        switch v.type {
+        case .String:
+            return cast(^ObjectString)v
+        case .Class:
+            return (cast(^ObjectClass)v).name
+        case .Native:
+            return (cast(^ObjectNative)v).name
+        case .Instance:
+            return take_string(vm, strings.concatenate({(cast(^ObjectInstance)v).class.name.chars, " instance"}, vm.alloc))
+        case .Function:
+            return function_to_string(vm, cast(^ObjectFunction)v)
+        case .Closure:
+            return function_to_string(vm, (cast(^ObjectClosure)v).function)
+        case .BoundMethod:
+            return function_to_string(vm, (cast(^ObjectBoundMethod)v).method.function)
+        case .Upvalue:
+            return copy_string(vm, "upvalue")
+        }
+    }
+
+    unreachable()
+}
+
+@(private = "file")
+function_to_string :: proc(vm: ^VM, function: ^ObjectFunction) -> ^ObjectString {
+    if function.name == nil {
+        return copy_string(vm, "<script>")
+    }
+    return take_string(vm, strings.concatenate({"<fn ", function.name.chars, ">"}, vm.alloc))
 }

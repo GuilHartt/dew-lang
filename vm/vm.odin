@@ -59,6 +59,7 @@ init :: proc(vm: ^VM) {
 	vm.init_string = copy_string(vm, "init")
 
 	register_native(vm, "clock", 0, clock_native)
+	register_builtins(vm)
 }
 
 @(private = "file")
