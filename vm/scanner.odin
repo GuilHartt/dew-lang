@@ -26,7 +26,7 @@ is_alpha :: #force_inline proc(c: u8) -> bool {
 
 @(private)
 scan_token :: proc(scanner: ^Scanner) -> Token {
-    skip_whitespace(scanner)
+    if !skip_whitespace(scanner) do return error_token(scanner, "Unterminated block comment.")
 
     scanner.start =  scanner.current
 
@@ -101,7 +101,7 @@ error_token :: proc(scanner: ^Scanner, message: string) -> Token {
 }
 
 @(private="file")
-skip_whitespace :: proc(scanner: ^Scanner) {
+skip_whitespace :: proc(scanner: ^Scanner) -> bool {
     for {
         c := peek(scanner)
         switch c {
@@ -112,12 +112,40 @@ skip_whitespace :: proc(scanner: ^Scanner) {
             case '/':
                 if peek_next(scanner) == '/' {
                     for peek(scanner) != '\n' && !is_at_end(scanner) do advance(scanner)
+                } else if peek_next(scanner) == '*' {
+                    if !skip_block_comment(scanner) do return false
                 } else {
-                    return
+                    return true
                 }
-            case: return
+            case: return true
         }
     }
+}
+
+@(private="file")
+skip_block_comment :: proc(scanner: ^Scanner) -> bool {
+    advance(scanner)
+    advance(scanner)
+
+    depth := 1
+    for depth > 0 {
+        if is_at_end(scanner) do return false
+
+        if peek(scanner) == '/' && peek_next(scanner) == '*' {
+            advance(scanner)
+            advance(scanner)
+            depth += 1
+        } else if peek(scanner) == '*' && peek_next(scanner) == '/' {
+            advance(scanner)
+            advance(scanner)
+            depth -= 1
+        } else {
+            if peek(scanner) == '\n' do scanner.line += 1
+            advance(scanner)
+        }
+    }
+
+    return true
 }
 
 @(private="file")
