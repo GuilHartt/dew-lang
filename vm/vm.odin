@@ -58,10 +58,13 @@ init :: proc(vm: ^VM) {
 	vm.init_string = nil
 	vm.init_string = copy_string(vm, "init")
 
-	define_native(vm, "clock", proc(vm: ^VM, args: []Value) -> (Value, bool) {
-		nanos := time.to_unix_nanoseconds(time.now())
-		return val_number(f64(nanos) / 1e9), true
-	})
+	register_native(vm, "clock", 0, clock_native)
+}
+
+@(private = "file")
+clock_native :: proc(call: ^NativeCall) -> (Value, bool) {
+	nanos := time.to_unix_nanoseconds(time.now())
+	return val_number(f64(nanos) / 1e9), true
 }
 
 destroy :: proc(vm: ^VM) {
@@ -80,7 +83,7 @@ vm_reset_stack :: proc(vm: ^VM) {
 	vm.open_upvalues = nil
 }
 
-@(private = "file", cold)
+@(private, cold)
 runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
 	context = runtime.default_context()
 	fmt.eprintfln(format, ..args)
@@ -101,12 +104,12 @@ runtime_error :: proc "contextless" (vm: ^VM, format: string, args: ..any) {
 	vm_reset_stack(vm)
 }
 
-define_native :: proc(vm: ^VM, name: string, function: NativeFn) {
+register_native :: proc(vm: ^VM, name: string, arity: int, function: NativeFn) {
 	context.allocator = vm.alloc
 	name_object := copy_string(vm, name)
 	stack_push(vm, val_obj(name_object))
-	stack_push(vm, val_obj(new_native(vm, function, name_object)))
-	table_set(&vm.globals, as_string(peek(vm, 1)), peek(vm, 0))
+	stack_push(vm, val_obj(new_native(vm, function, name_object, arity)))
+	table_set(&vm.globals, name_object, peek(vm, 0))
 	stack_drop(vm, 2)
 }
 
@@ -147,11 +150,7 @@ peek :: #force_inline proc "contextless" (vm: ^VM, distance: int) -> Value {
 }
 
 @(private)
-call :: #force_inline proc "contextless" (
-	vm: ^VM,
-	closure: ^ObjectClosure,
-	arg_count: int,
-) -> bool {
+call :: #force_inline proc "contextless" (vm: ^VM, closure: ^ObjectClosure, arg_count: int) -> bool {
 	if arg_count != closure.function.arity {
 		runtime_error(vm, "Expected %d arguments but got %d.", closure.function.arity, arg_count)
 		return false
@@ -174,11 +173,14 @@ call :: #force_inline proc "contextless" (
 call_value :: #force_inline proc (vm: ^VM, callee: Value, arg_count: int) -> bool {
 	if is_obj(callee) {
 		#partial switch obj_type(callee) {
-		case .BoundMethod:
+
+		case .BoundMethod: {
 			bound := as_bound_method(callee)
 			vm.stack[vm.sp -arg_count - 1] = bound.receiver
 			return call(vm, bound.method, arg_count)
-		case .Class:
+		}
+		
+		case .Class: {
 			class := as_class(callee)
 			vm.stack[vm.sp -arg_count - 1] = val_obj(new_instance(vm, class))
 
@@ -191,18 +193,29 @@ call_value :: #force_inline proc (vm: ^VM, callee: Value, arg_count: int) -> boo
 			}
 
 			return true
-		case .Closure:
+		}
+			
+		case .Closure: {
 			return call(vm, as_closure(callee), arg_count)
-		case .Native:
+		}
+			
+		case .Native: {
 			native := as_native(callee)
 
-			if result, ok := native(vm, vm.stack[vm.sp - arg_count:vm.sp]); ok {
+			if arg_count != native.arity {
+				runtime_error(vm, "Expected %d arguments but got %d.", native.arity, arg_count)
+				return false
+			}
+
+			if result, ok := native.function(&NativeCall{vm, native.name.chars, vm.stack[vm.sp - arg_count:vm.sp],}); ok {
 				vm.sp -= arg_count + 1
 				stack_push(vm, result)
 				return true
 			}
 
+
 			return false
+		}
 		}
 	}
 	runtime_error(vm, "Can only call functions and classes.")

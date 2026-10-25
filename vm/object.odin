@@ -29,12 +29,11 @@ ObjectFunction :: struct {
 	name:          ^ObjectString,
 }
 
-NativeFn :: #type proc(vm: ^VM, args: []Value) -> (Value, bool)
-
 ObjectNative :: struct {
 	using obj: Object,
 	function:  NativeFn,
 	name:      ^ObjectString,
+	arity:     int,
 }
 
 ObjectString :: struct {
@@ -169,10 +168,11 @@ new_instance :: proc(vm: ^VM, class: ^ObjectClass) -> ^ObjectInstance {
 	return instance
 }
 
-new_native :: proc(vm: ^VM, function: NativeFn, name: ^ObjectString) -> ^ObjectNative {
+new_native :: proc(vm: ^VM, function: NativeFn, name: ^ObjectString, arity: int) -> ^ObjectNative {
 	native := allocate_object(vm, ObjectNative, .Native)
 	native.function = function
 	native.name = name
+	native.arity = arity
 	return native
 }
 

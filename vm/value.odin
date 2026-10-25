@@ -23,6 +23,7 @@ print_value :: proc "contextless" (value: Value) {
     }
 }
 
+@(private)
 as_closure :: #force_inline proc "contextless" (v: Value) -> ^ObjectClosure {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectClosure)obj
@@ -30,6 +31,7 @@ as_closure :: #force_inline proc "contextless" (v: Value) -> ^ObjectClosure {
     return nil
 }
 
+@(private)
 as_bound_method :: #force_inline proc "contextless" (v: Value) -> ^ObjectBoundMethod {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectBoundMethod)obj
@@ -37,6 +39,7 @@ as_bound_method :: #force_inline proc "contextless" (v: Value) -> ^ObjectBoundMe
     return nil
 }
 
+@(private)
 as_class :: #force_inline proc "contextless" (v: Value) -> ^ObjectClass {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectClass)obj
@@ -44,6 +47,7 @@ as_class :: #force_inline proc "contextless" (v: Value) -> ^ObjectClass {
     return nil
 }
 
+@(private)
 as_function :: #force_inline proc "contextless" (v: Value) -> ^ObjectFunction {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectFunction)obj
@@ -51,6 +55,7 @@ as_function :: #force_inline proc "contextless" (v: Value) -> ^ObjectFunction {
     return nil
 }
 
+@(private)
 as_instance :: #force_inline proc "contextless" (v: Value) -> ^ObjectInstance {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectInstance)obj
@@ -58,13 +63,15 @@ as_instance :: #force_inline proc "contextless" (v: Value) -> ^ObjectInstance {
     return nil
 }
 
-as_native :: #force_inline proc "contextless" (v: Value) -> NativeFn {
+@(private)
+as_native :: #force_inline proc "contextless" (v: Value) -> ^ObjectNative {
     if obj, ok := v.(^Object); ok {
-        return (cast(^ObjectNative)obj).function
+        return cast(^ObjectNative)obj
     }
     return nil
 }
 
+@(private)
 as_string :: #force_inline proc "contextless" (v: Value) -> ^ObjectString {
     if obj, ok := v.(^Object); ok {
         return cast(^ObjectString)obj
@@ -72,11 +79,17 @@ as_string :: #force_inline proc "contextless" (v: Value) -> ^ObjectString {
     return nil
 }
 
+@(private)
 as_object :: #force_inline proc "contextless" (v: Value) -> ^Object {
     if obj, ok := v.(^Object); ok {
         return obj
     }
     return nil
+}
+
+@(private)
+obj_type :: #force_inline proc "contextless" (v: Value) -> ObjectType {
+    return as_object(v).type
 }
 
 val_nil :: #force_inline proc "contextless" () -> Value {
@@ -93,6 +106,10 @@ val_bool :: #force_inline proc "contextless" (b: bool) -> Value {
 
 val_obj :: #force_inline proc "contextless" (obj: ^Object) -> Value {
     return Value(obj)
+}
+
+val_string :: proc(vm: ^VM, chars: string) -> Value {
+    return val_obj(copy_string(vm, chars))
 }
 
 is_nil :: #force_inline proc "contextless" (v: Value) -> bool {
@@ -129,12 +146,32 @@ check_bool :: #force_inline proc "contextless" (v: Value) -> (bool, bool) {
 }
 
 check_string :: #force_inline proc "contextless" (v: Value) -> (^ObjectString, bool) {
-    if obj, ok := v.(^Object); ok {
+    if obj, ok := v.(^Object); ok && obj.type == .String {
         return cast(^ObjectString)obj, true
     }
     return nil, false
 }
 
-obj_type :: #force_inline proc "contextless" (v: Value) -> ObjectType {
-    return as_object(v).type
+value_type_name :: proc "contextless" (v: Value) -> string {
+    context = runtime.default_context()
+
+    @(static, rodata) names := [ObjectType]string {
+        .BoundMethod = "method",
+        .Class       = "class",
+        .Closure     = "function",
+        .Function    = "function",
+        .Instance    = "instance",
+        .Native      = "native",
+        .String      = "string",
+        .Upvalue     = "upvalue",
+    }
+
+    switch value in v {
+    case Nil:     return "nil"
+    case bool:    return "bool"
+    case f64:     return "number"
+    case ^Object: return names[value.type]
+    }
+
+    return "unknown"
 }
