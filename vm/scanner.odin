@@ -162,7 +162,6 @@ identifier_type :: proc(scanner: ^Scanner) -> TokenType {
         case "if":       return .If 
         case "nil":      return .Nil
         case "or":       return .Or
-        case "print":    return .Print
         case "return":   return .Return
         case "super":    return .Super
         case "true":     return .True

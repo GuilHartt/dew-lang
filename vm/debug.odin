@@ -24,7 +24,7 @@ disassemble_instruction :: proc(chunk: ^Chunk, offset: int) -> int {
     switch instruction {
         case .Constant, .GetGlobal, .DefineGlobal, .SetGlobal, .Class, .GetProperty, .SetProperty, .Method, .GetSuper:
             return constant_instruction(instruction, chunk, offset)
-        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .Print, .CloseUpvalue, .Return, .Inherit:
+        case .Nil, .True, .False, .Pop, .Equal, .Greater, .Less, .Add, .Sub, .Mul, .Div, .Not, .Negate, .CloseUpvalue, .Return, .Inherit:
             return simple_instruction(instruction, offset)
         case .SetLocal, .GetLocal, .Call, .GetUpvalue, .SetUpvalue:
             return byte_instruction(instruction, chunk, offset)

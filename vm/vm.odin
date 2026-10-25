@@ -3,7 +3,6 @@ package vm
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
-import "core:time"
 
 FRAMES_MAX :: 64
 STACK_MAX :: FRAMES_MAX * (int(max(u8)) + 1)
@@ -58,14 +57,7 @@ init :: proc(vm: ^VM) {
 	vm.init_string = nil
 	vm.init_string = copy_string(vm, "init")
 
-	register_native(vm, "clock", 0, clock_native)
 	register_builtins(vm)
-}
-
-@(private = "file")
-clock_native :: proc(call: ^NativeCall) -> (Value, bool) {
-	nanos := time.to_unix_nanoseconds(time.now())
-	return val_number(f64(nanos) / 1e9), true
 }
 
 destroy :: proc(vm: ^VM) {
@@ -612,11 +604,6 @@ vm_run :: proc(vm: ^VM) -> InterpretResult {
 
 		case .Not: {
 			stack_push(vm, Value(is_falsey(stack_pop(vm))))
-		}
-
-		case .Print: {
-			print_value(stack_pop(vm))
-			fmt.println()
 		}
 
 		case .Jump: {

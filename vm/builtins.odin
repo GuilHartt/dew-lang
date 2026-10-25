@@ -4,10 +4,17 @@ import "core:fmt"
 
 @(private)
 register_builtins :: proc(vm: ^VM) {
+	register_native(vm, "print", 1, print_native)
 	register_native(vm, "println", 1, println_native)
 	register_native(vm, "str", 1, str_native)
 	register_native(vm, "len", 1, len_native)
 	register_native(vm, "assert", 1, assert_native)
+}
+
+@(private = "file")
+print_native :: proc(call: ^NativeCall) -> (Value, bool) {
+	print_value(call.args[0])
+	return val_nil(), true
 }
 
 @(private = "file")

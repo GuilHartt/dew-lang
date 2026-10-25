@@ -936,13 +936,6 @@ if_statement :: proc(parser: ^Parser) {
 }
 
 @(private = "file")
-print_statement :: proc(parser: ^Parser) {
-	expression(parser)
-	consume_terminator(parser, "Expect ';' after value.")
-	emit_byte(parser, u8(Opcode.Print))
-}
-
-@(private = "file")
 return_statement :: proc(parser: ^Parser) {
 	if parser.compiler.type == .Script {
 		error(parser, "Can't return from top-level code.")
@@ -1019,7 +1012,7 @@ synchronize :: proc(parser: ^Parser) {
 		if parser.previous.type == .Semicolon do return
 
 		#partial switch parser.current.type {
-		case .Class, .Fn, .Var, .For, .If, .While, .Print, .Return:
+		case .Class, .Fn, .Var, .For, .If, .While, .Return:
 			return
 		}
 
@@ -1044,9 +1037,7 @@ declaration :: proc(parser: ^Parser) {
 
 @(private = "file")
 statement :: proc(parser: ^Parser) {
-	if match(parser, .Print) {
-		print_statement(parser)
-	} else if match(parser, .For) {
+	if match(parser, .For) {
 		for_statement(parser)
 	} else if match(parser, .If) {
 		if_statement(parser)

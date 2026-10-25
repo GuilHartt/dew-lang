@@ -25,7 +25,6 @@ Opcode :: enum u8 {
     Div,
     Not,
     Negate,
-    Print,
     Jump,
     JumpIfFalse,
     Loop,
