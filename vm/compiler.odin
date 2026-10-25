@@ -49,6 +49,13 @@ Upvalue :: struct {
 	is_local: bool,
 }
 
+Loop :: struct {
+	enclosing:   ^Loop,
+	start:       int,
+	scope_depth: int,
+	breaks:      [dynamic]int,
+}
+
 FunctionType :: enum u8 {
 	Function,
 	Initializer,
@@ -64,6 +71,7 @@ Compiler :: struct {
 	local_count: int,
 	upvalues:    [LOCAL_MAX]Upvalue,
 	scope_depth: int,
+	loop:        ^Loop,
 }
 
 ClassCompiler :: struct {
@@ -109,6 +117,7 @@ compiler_init :: proc(parser: ^Parser, compiler: ^Compiler, type: FunctionType) 
 	compiler.type = type
 	compiler.local_count = 0
 	compiler.scope_depth = 0
+	compiler.loop = nil
 	compiler.function = new_function(parser.vm)
 
 	if type != .Script {
@@ -295,6 +304,42 @@ end_scope :: proc(parser: ^Parser) {
 			emit_byte(parser, u8(Opcode.Pop))
 		}
 		current.local_count -= 1
+	}
+}
+
+@(private = "file")
+begin_loop :: proc(parser: ^Parser, loop: ^Loop, start: int) {
+	loop.enclosing = parser.compiler.loop
+	loop.start = start
+	loop.scope_depth = parser.compiler.scope_depth
+	parser.compiler.loop = loop
+}
+
+@(private = "file")
+end_loop :: proc(parser: ^Parser) {
+	loop := parser.compiler.loop
+
+	for jump in loop.breaks {
+		patch_jump(parser, jump)
+	}
+	delete(loop.breaks)
+
+	parser.compiler.loop = loop.enclosing
+}
+
+@(private = "file")
+discard_locals :: proc(parser: ^Parser, depth: int) {
+	current := parser.compiler
+
+	for i := current.local_count - 1; i >= 0; i -= 1 {
+		local := current.locals[i]
+		if local.depth <= depth do break
+
+		if local.is_captured {
+			emit_byte(parser, u8(Opcode.CloseUpvalue))
+		} else {
+			emit_byte(parser, u8(Opcode.Pop))
+		}
 	}
 }
 
@@ -849,6 +894,9 @@ for_statement :: proc(parser: ^Parser) {
 		patch_jump(parser, body_jump)
 	}
 
+	loop: Loop
+	begin_loop(parser, &loop, loop_start)
+
 	consume_block(parser, "Expect '{' before 'for' body.")
 	emit_loop(parser, loop_start)
 
@@ -856,6 +904,8 @@ for_statement :: proc(parser: ^Parser) {
 		patch_jump(parser, exit_jump)
 		emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 	}
+
+	end_loop(parser)
 
 	end_scope(parser)
 }
@@ -912,6 +962,34 @@ return_statement :: proc(parser: ^Parser) {
 }
 
 @(private = "file")
+break_statement :: proc(parser: ^Parser) {
+	loop := parser.compiler.loop
+	if loop == nil {
+		error(parser, "Can't use 'break' outside of a loop.")
+		return
+	}
+
+	discard_locals(parser, loop.scope_depth)
+	append(&loop.breaks, emit_jump(parser, .Jump))
+
+	consume_terminator(parser, "Expect ';' after 'break'.")
+}
+
+@(private = "file")
+continue_statement :: proc(parser: ^Parser) {
+	loop := parser.compiler.loop
+	if loop == nil {
+		error(parser, "Can't use 'continue' outside of a loop.")
+		return
+	}
+
+	discard_locals(parser, loop.scope_depth)
+	emit_loop(parser, loop.start)
+
+	consume_terminator(parser, "Expect ';' after 'continue'.")
+}
+
+@(private = "file")
 while_statement :: proc(parser: ^Parser) {
 	loop_start := len(current_chunk(parser).instructions)
 
@@ -920,12 +998,17 @@ while_statement :: proc(parser: ^Parser) {
 	exit_jump := emit_jump(parser, .JumpIfFalse)
 	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
 
+	loop: Loop
+	begin_loop(parser, &loop, loop_start)
+
 	consume_block(parser, "Expect '{' before 'while' body.")
 
 	emit_loop(parser, loop_start)
 
 	patch_jump(parser, exit_jump)
 	emit_byte(parser, u8(Opcode.Pop)) // TODO: remove
+
+	end_loop(parser)
 }
 
 @(private = "file")
@@ -969,6 +1052,10 @@ statement :: proc(parser: ^Parser) {
 		if_statement(parser)
 	} else if match(parser, .Return) {
 		return_statement(parser)
+	} else if match(parser, .Break) {
+		break_statement(parser)
+	} else if match(parser, .Continue) {
+		continue_statement(parser)
 	} else if match(parser, .While) {
 		while_statement(parser)
 	} else if match(parser, .LeftBrace) {

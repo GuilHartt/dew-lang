@@ -123,23 +123,25 @@ skip_whitespace :: proc(scanner: ^Scanner) {
 @(private="file")
 identifier_type :: proc(scanner: ^Scanner) -> TokenType {
     switch scanner.source[scanner.start : scanner.current] {
-        case "and":    return .And
-        case "class":  return .Class
-        case "else":   return .Else
-        case "false":  return .False
-        case "for":    return .For
-        case "fn":     return .Fn
-        case "if":     return .If 
-        case "nil":    return .Nil
-        case "or":     return .Or
-        case "print":  return .Print
-        case "return": return .Return
-        case "super":  return .Super
-        case "true":   return .True
-        case "self":   return .Self
-        case "var":    return .Var
-        case "while":  return .While
-        case:          return .Identifier
+        case "and":      return .And
+        case "class":    return .Class
+        case "break":    return .Break
+        case "continue": return .Continue
+        case "else":     return .Else
+        case "false":    return .False
+        case "for":      return .For
+        case "fn":       return .Fn
+        case "if":       return .If 
+        case "nil":      return .Nil
+        case "or":       return .Or
+        case "print":    return .Print
+        case "return":   return .Return
+        case "super":    return .Super
+        case "true":     return .True
+        case "self":     return .Self
+        case "var":      return .Var
+        case "while":    return .While
+        case:            return .Identifier
     }
 }
 
